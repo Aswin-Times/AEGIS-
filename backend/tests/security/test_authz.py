@@ -48,7 +48,9 @@ def test_non_admins_cannot_perform_admin_actions(fixtures, role):
     for method, path, body in routes:
         response = _call(tenant, method, path, body, headers)
         assert response.status_code == 403, f"{role} {method} {path}: {response.status_code}"
-    assert len(tenant.audit_events()) == before
+    # Refused actions change nothing: the only new audit events record the refusals themselves.
+    new_events = tenant.audit_events()[: len(tenant.audit_events()) - before]
+    assert [event["event_type"] for event in new_events] == ["authz.denied"] * len(routes)
 
 
 def test_agent_key_is_refused_on_every_control_plane_route(fixtures):

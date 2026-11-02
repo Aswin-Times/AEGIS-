@@ -268,6 +268,7 @@ EXPECTED_TABLE_PRIVILEGES = {
     "simulated_outbox": {"SELECT", "INSERT"},
     "audit_chain_heads": {"SELECT"},
     "audit_events": {"SELECT", "INSERT"},
+    "security_events": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -277,6 +278,7 @@ EXPECTED_COLUMN_UPDATES = {
     "approvals": {"status", "decided_by", "decided_at", "comment"},
     "executions": {"status", "result", "finished_at"},
     "audit_chain_heads": {"seq", "head_hash"},
+    "security_events": {"correlation_processed_at"},
 }
 
 

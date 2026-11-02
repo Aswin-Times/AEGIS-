@@ -2,7 +2,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,13 +11,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.exceptions import HTTPException
 
-from aegis.api import routes_registry, routes_runtime
+from aegis.api import routes_events, routes_registry, routes_runtime
 from aegis.api.dependencies import Container
 from aegis.config import Settings
 from aegis.db.session import Database
-from aegis.errors import AegisError, ServiceUnavailable
+from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
+from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
 from aegis.logging_config import configure_logging
+from aegis.security.access_events import record_access_failure
 from aegis.security.tokens import TokenService
 
 logger = logging.getLogger("aegis.api")
@@ -50,9 +52,36 @@ def _error_response(request: Request, status: int, code: str, message: str, **ex
     )
 
 
+def _last_uuid_in_path(request: Request) -> UUID | None:
+    found = None
+    for value in request.path_params.values():
+        try:
+            found = UUID(str(value))
+        except ValueError:
+            continue
+    return found
+
+
+def _record_failed_access(request: Request, error: AegisError) -> None:
+    principal = getattr(request.state, "principal", None)
+    if principal is None or not isinstance(error, Forbidden | NotFound):
+        return
+    container = request.app.state.container
+    record_access_failure(
+        container.db,
+        container.failure_limiter,
+        principal,
+        event_type="authz.denied" if isinstance(error, Forbidden) else "access.not_visible",
+        requested_id=_last_uuid_in_path(request),
+        now=container.clock(),
+    )
+
+
 def _register_error_handlers(app: FastAPI) -> None:
+    # Not async: it writes to the database, so Starlette runs it in the thread pool.
     @app.exception_handler(AegisError)
-    async def handle_aegis_error(request: Request, error: AegisError):
+    def handle_aegis_error(request: Request, error: AegisError):
+        _record_failed_access(request, error)
         return _error_response(request, error.status_code, error.code, error.message)
 
     @app.exception_handler(RequestValidationError)
@@ -97,6 +126,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
         db=db,
         tokens=TokenService(settings),
         tools=tools or default_registry(),
+        failure_limiter=FailureLimiter(settings.failure_events_per_minute),
     )
 
     @asynccontextmanager
@@ -152,6 +182,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
 
     app.include_router(routes_registry.router, prefix="/api/v1")
     app.include_router(routes_runtime.router, prefix="/api/v1")
+    app.include_router(routes_events.router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=True)
     def healthz() -> dict[str, str]:

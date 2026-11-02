@@ -20,6 +20,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+from backfill_events import backfill_all
 from seed_demo import seed
 
 from aegis.db.bootstrap import ensure_roles_and_database, run_migrations
@@ -78,6 +79,7 @@ def main() -> int:
         app_password=passwords["app"],
     )
     run_migrations(owner_url)
+    backfill_all(owner_url)
 
     environment = {
         **os.environ,

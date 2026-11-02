@@ -56,8 +56,8 @@ def ensure_roles_and_database(
     )
 
 
-def run_migrations(owner_url: str) -> None:
+def run_migrations(owner_url: str, *, revision: str = "head") -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
     config.attributes["url"] = owner_url
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)

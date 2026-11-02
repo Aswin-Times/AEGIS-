@@ -64,6 +64,7 @@ def auth_login(body: LoginIn, container: ContainerDep):
         email=body.email,
         password=body.password,
         now=container.clock(),
+        limiter=container.failure_limiter,
     )
     return TokenOut(access_token=token, expires_in=container.tokens.ttl_seconds)
 

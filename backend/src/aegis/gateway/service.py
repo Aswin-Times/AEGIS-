@@ -173,6 +173,13 @@ def _safe_evaluate(facts: ActionFacts, policy: PolicyDocument | PolicyUnavailabl
         return Evaluation(Outcome.DENY, "POLICY_EVALUATION_ERROR")
 
 
+def _references_invisible_id(facts: ActionFacts) -> bool:
+    """An ID that may be another tenant's. RLS makes that and a typo indistinguishable."""
+    missing_resource = facts.resource_id_supplied and facts.resource is None
+    missing_attachment = facts.attachment is not None and facts.attachment.classification is None
+    return missing_resource or missing_attachment
+
+
 def _record_decision(
     session: Session,
     request: ActionRequest,
@@ -220,6 +227,7 @@ def _record_decision(
             "reason_code": decision.reason_code,
             "matched_rule_id": decision.matched_rule_id,
             "action_hash": request.action_hash,
+            **({"not_visible_reference": True} if _references_invisible_id(facts) else {}),
         },
     )
     return decision
@@ -508,6 +516,17 @@ def execute_approved(
         raise ServiceUnavailable() from error
 
 
+def _refusal_reason(approval: Approval | None) -> str:
+    if approval is None:
+        return "NO_APPROVAL"
+    return {
+        "PENDING": "APPROVAL_PENDING",
+        "REJECTED": "APPROVAL_REJECTED",
+        "EXECUTED": "APPROVAL_ALREADY_USED",
+        "CANCELLED": "APPROVAL_CANCELLED",
+    }[approval.status]
+
+
 def _execute_approved(db, registry, agent, request_id, clock) -> ActionResult:
     refused = None
     claim = None
@@ -519,41 +538,58 @@ def _execute_approved(db, registry, agent, request_id, clock) -> ActionResult:
         approval = session.execute(
             select(Approval).where(Approval.request_id == request.id).with_for_update()
         ).scalar_one_or_none()
-        if approval is None or approval.status != "APPROVED":
-            raise Conflict(
-                "This action does not have an approval that can be used.",
-                code="APPROVAL_NOT_EXECUTABLE",
-            )
-
         now = clock()
-        recomputed = compute_action_hash(
-            request.tenant_id, request.agent_id, request.tool, request.resource_id,
-            request.params_canonical,
-        )
-        if now >= approval.expires_at:
-            refused = "APPROVAL_EXPIRED"
-        elif recomputed != approval.action_hash or recomputed != request.action_hash:
-            refused = "ACTION_HASH_MISMATCH"
-        else:
-            # Re-check against current state: grants, agent status, and the active policy
-            # may all have changed since the approval.
-            facts = _load_facts(
-                session, registry, request.tenant_id, request.agent_id, request.tool,
-                request.resource_id, json.loads(request.params_canonical),
+        if approval is None or approval.status != "APPROVED":
+            append_event(
+                session,
+                agent.tenant_id,
+                event_type="approval.execution_refused",
+                actor_type="agent",
+                actor_id=agent.id,
+                correlation_id=request.id,
+                subject_type="action_request",
+                subject_id=request.id,
+                occurred_at=now,
+                payload={
+                    "reason": _refusal_reason(approval),
+                    "approval_id": None if approval is None else str(approval.id),
+                },
             )
-            loaded = _load_policy(session, request.tenant_id)
-            evaluation = _safe_evaluate(facts, loaded.document)
-            _record_decision(session, request, facts, loaded, evaluation, now)
-            if evaluation.outcome is Outcome.DENY:
-                refused = evaluation.reason_code
-
-        if refused is not None:
-            _cancel(session, approval, refused, agent.id, now)
+            refused = "NOT_EXECUTABLE"
         else:
+            recomputed = compute_action_hash(
+                request.tenant_id, request.agent_id, request.tool, request.resource_id,
+                request.params_canonical,
+            )
+            if now >= approval.expires_at:
+                refused = "APPROVAL_EXPIRED"
+            elif recomputed != approval.action_hash or recomputed != request.action_hash:
+                refused = "ACTION_HASH_MISMATCH"
+            else:
+                # Re-check against current state: grants, agent status, and the active policy
+                # may all have changed since the approval.
+                facts = _load_facts(
+                    session, registry, request.tenant_id, request.agent_id, request.tool,
+                    request.resource_id, json.loads(request.params_canonical),
+                )
+                loaded = _load_policy(session, request.tenant_id)
+                evaluation = _safe_evaluate(facts, loaded.document)
+                _record_decision(session, request, facts, loaded, evaluation, now)
+                if evaluation.outcome is Outcome.DENY:
+                    refused = evaluation.reason_code
+            if refused is not None:
+                _cancel(session, approval, refused, agent.id, now)
+
+        if refused is None:
             approval.status = "EXECUTED"
             session.flush()
             claim = _claim_execution(session, request, now)
 
+    if refused == "NOT_EXECUTABLE":
+        raise Conflict(
+            "This action does not have an approval that can be used.",
+            code="APPROVAL_NOT_EXECUTABLE",
+        )
     if refused is not None:
         raise Conflict(
             "The approval is no longer valid for this action.",

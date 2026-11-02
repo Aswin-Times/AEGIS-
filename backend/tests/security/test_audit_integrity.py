@@ -75,7 +75,9 @@ def test_owner_role_is_blocked_by_triggers(urls, new_tenant, statement):
     tenant = new_tenant()
     engine = create_engine(urls.owner)
     try:
-        with pytest.raises(DBAPIError, match="append-only"), engine.begin() as connection:
+        # TRUNCATE now hits the security_events foreign key first. Either refusal protects the log.
+        refused = "append-only|referenced in a foreign key"
+        with pytest.raises(DBAPIError, match=refused), engine.begin() as connection:
             connection.execute(
                 text("SELECT set_config('app.tenant_id', :tenant, true)"),
                 {"tenant": str(tenant)},

@@ -8,6 +8,7 @@ from fastapi import Depends, Query, Request
 from aegis.config import Settings
 from aegis.db.session import Database
 from aegis.errors import Forbidden, Unauthenticated
+from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry
 from aegis.security import authentication
 from aegis.security.principals import ADMIN, REVIEWER, AgentPrincipal, UserPrincipal
@@ -24,6 +25,7 @@ class Container:
     db: Database
     tokens: TokenService
     tools: ToolRegistry
+    failure_limiter: FailureLimiter
     clock: Callable[[], datetime] = utc_now
 
 
@@ -42,15 +44,23 @@ def _bearer_token(request: Request) -> str:
 
 
 def current_user(request: Request, container: ContainerDep) -> UserPrincipal:
-    return authentication.authenticate_user(
-        container.db, container.tokens, _bearer_token(request)
+    user = authentication.authenticate_user(
+        container.db,
+        container.tokens,
+        _bearer_token(request),
+        container.clock(),
+        container.failure_limiter,
     )
+    request.state.principal = user
+    return user
 
 
 def current_agent(request: Request, container: ContainerDep) -> AgentPrincipal:
-    return authentication.authenticate_agent(
-        container.db, _bearer_token(request), container.clock()
+    agent = authentication.authenticate_agent(
+        container.db, _bearer_token(request), container.clock(), container.failure_limiter
     )
+    request.state.principal = agent
+    return agent
 
 
 UserDep = Annotated[UserPrincipal, Depends(current_user)]

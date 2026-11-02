@@ -11,17 +11,44 @@ from aegis.canonical import sha256_hex
 from aegis.db.models import AgentCredential, AuditChainHead, User
 from aegis.db.session import Database
 from aegis.errors import Unauthenticated
+from aegis.events.limiter import FailureLimiter
 from aegis.security.agent_keys import parse_key, secret_matches
 from aegis.security.passwords import verify_password
 from aegis.security.principals import AgentPrincipal, UserPrincipal
 from aegis.security.tokens import TokenService
 
 
-def _tenant_exists(session: Session, tenant_id: UUID) -> bool:
-    return session.get(AuditChainHead, tenant_id) is not None
+def _record_failure(
+    session: Session,
+    limiter: FailureLimiter,
+    tenant_id: UUID,
+    event_type: str,
+    now: datetime,
+    **fields,
+) -> None:
+    # The tenant may be attacker input, so an unknown one must not create limiter state.
+    if session.get(AuditChainHead, tenant_id) is None:
+        return
+    admitted, suppressed = limiter.admit((tenant_id, event_type))
+    if not admitted:
+        return
+    payload = fields.pop("payload", {})
+    if suppressed:
+        payload = {**payload, "suppressed_since_last": suppressed}
+    append_event(
+        session,
+        tenant_id,
+        event_type=event_type,
+        actor_type="anonymous",
+        occurred_at=now,
+        payload=payload,
+        **fields,
+    )
 
 
-def authenticate_agent(db: Database, presented: str, now: datetime) -> AgentPrincipal:
+def authenticate_agent(
+    db: Database, presented: str, now: datetime, limiter: FailureLimiter
+) -> AgentPrincipal:
     parsed = parse_key(presented)
     if parsed is None:
         raise Unauthenticated()
@@ -43,35 +70,50 @@ def authenticate_agent(db: Database, presented: str, now: datetime) -> AgentPrin
                 tenant_id=credential.tenant_id,
                 credential_id=credential.id,
             )
-        elif _tenant_exists(session, parsed.tenant_id):
-            append_event(
+        else:
+            _record_failure(
                 session,
+                limiter,
                 parsed.tenant_id,
-                event_type="auth.agent_failed",
-                actor_type="anonymous",
+                "auth.agent_failed",
+                now,
                 subject_type="agent_credential",
                 subject_id=parsed.credential_id,
-                occurred_at=now,
             )
     if principal is None:
         raise Unauthenticated()
     return principal
 
 
-def authenticate_user(db: Database, tokens: TokenService, presented: str) -> UserPrincipal:
+def authenticate_user(
+    db: Database, tokens: TokenService, presented: str, now: datetime, limiter: FailureLimiter
+) -> UserPrincipal:
     claims = tokens.verify(presented)
+    principal = None
     with db.tenant_transaction(claims.tenant_id) as session:
         user = session.get(User, claims.user_id)
-        if user is None or not user.is_active:
-            raise Unauthenticated()
-        return UserPrincipal(
-            id=user.id, tenant_id=user.tenant_id, email=user.email, role=user.role
-        )
+        if user is None:
+            # The signature is valid, so this token was issued by AEGIS for some other tenant's
+            # user, or the signing key is compromised. Either way it is worth recording.
+            _record_failure(session, limiter, claims.tenant_id, "auth.token_rejected", now)
+        elif user.is_active:
+            principal = UserPrincipal(
+                id=user.id, tenant_id=user.tenant_id, email=user.email, role=user.role
+            )
+    if principal is None:
+        raise Unauthenticated()
+    return principal
 
 
 def login(
-    db: Database, tokens: TokenService, *, tenant_slug: str, email: str, password: str,
+    db: Database,
+    tokens: TokenService,
+    *,
+    tenant_slug: str,
+    email: str,
+    password: str,
     now: datetime,
+    limiter: FailureLimiter,
 ) -> str:
     email = email.lower()
     tenant_id = db.resolve_tenant(tenant_slug)
@@ -98,12 +140,12 @@ def login(
                 occurred_at=now,
             )
         else:
-            append_event(
+            _record_failure(
                 session,
+                limiter,
                 tenant_id,
-                event_type="auth.login_failed",
-                actor_type="anonymous",
-                occurred_at=now,
+                "auth.login_failed",
+                now,
                 payload={"email_sha256_prefix": sha256_hex(email)[:16]},
             )
     if token is None:

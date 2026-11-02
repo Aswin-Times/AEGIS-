@@ -268,6 +268,32 @@ class AuditEventOut(Out):
     payload: dict[str, Any]
 
 
+class SecurityEventOut(Out):
+    id: UUID
+    schema_version: int
+    event_type: str
+    occurred_at: datetime
+    recorded_at: datetime
+    actor_type: str
+    actor_id: UUID | None
+    asset_id: UUID | None
+    agent_id: UUID | None
+    agent_name: str | None = None
+    action_request_id: UUID | None
+    tool: str | None
+    action: str | None
+    resource_id: UUID | None
+    decision_id: UUID | None
+    approval_id: UUID | None
+    execution_id: UUID | None
+    correlation_id: UUID | None
+    severity: str
+    reason_code: str
+    attributes: dict[str, Any]
+    source_audit_event_id: UUID
+    source_event_hash: str
+
+
 class AuditHeadOut(Out):
     seq: int
     head_hash: str

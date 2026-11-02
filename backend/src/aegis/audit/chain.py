@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from aegis.canonical import canonical_hash
 from aegis.db.models import AuditChainHead, AuditEvent
+from aegis.events.projection import project_audit_event
 
 GENESIS_HASH = "0" * 64
 
@@ -94,6 +95,7 @@ def append_event(
     head.seq = event.seq
     head.head_hash = event.event_hash
     session.flush()
+    project_audit_event(session, event)
     return event
 
 

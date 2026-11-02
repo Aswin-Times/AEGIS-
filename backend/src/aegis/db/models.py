@@ -191,6 +191,34 @@ class SimulatedOutbox(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    schema_version: Mapped[int]
+    event_type: Mapped[str]
+    occurred_at: Mapped[datetime]
+    recorded_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())
+    actor_type: Mapped[str]
+    actor_id: Mapped[UUID | None]
+    asset_id: Mapped[UUID | None]
+    agent_id: Mapped[UUID | None]
+    action_request_id: Mapped[UUID | None]
+    tool: Mapped[str | None]
+    action: Mapped[str | None]
+    resource_id: Mapped[UUID | None]
+    decision_id: Mapped[UUID | None]
+    approval_id: Mapped[UUID | None]
+    execution_id: Mapped[UUID | None]
+    correlation_id: Mapped[UUID | None]
+    severity: Mapped[str]
+    reason_code: Mapped[str]
+    attributes: Mapped[dict[str, Any]]
+    source_audit_event_id: Mapped[UUID]
+    source_event_hash: Mapped[str]
+    correlation_processed_at: Mapped[datetime | None]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
