@@ -26,6 +26,7 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
+from aegis.llm.factory import build_llm_provider
 from aegis.logging_config import configure_logging
 from aegis.security.access_events import record_access_failure
 from aegis.security.tokens import TokenService
@@ -142,6 +143,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
         tokens=TokenService(settings),
         tools=tools or default_registry(),
         failure_limiter=FailureLimiter(settings.failure_events_per_minute),
+        llm=build_llm_provider(settings),
     )
 
     @asynccontextmanager

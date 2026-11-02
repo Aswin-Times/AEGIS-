@@ -10,6 +10,7 @@ from aegis.db.session import Database
 from aegis.errors import Forbidden, Unauthenticated
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry
+from aegis.llm.adapter import LlmProvider
 from aegis.security import authentication
 from aegis.security.principals import ADMIN, REVIEWER, AgentPrincipal, UserPrincipal
 from aegis.security.tokens import TokenService
@@ -27,7 +28,7 @@ class Container:
     tools: ToolRegistry
     failure_limiter: FailureLimiter
     clock: Callable[[], datetime] = utc_now
-    llm: object | None = None
+    llm: LlmProvider | None = None
 
 
 def get_container(request: Request) -> Container:

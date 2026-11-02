@@ -82,7 +82,14 @@ def incident_timeline(
 )
 def investigation_start(incident_id: UUID, user: ReviewerDep, container: ContainerDep):
     return InvestigationRunOut.model_validate(
-        run_investigation(container.db, user, incident_id, clock=container.clock)
+        run_investigation(
+            container.db,
+            user,
+            incident_id,
+            clock=container.clock,
+            llm=container.llm,
+            llm_timeout_seconds=container.settings.llm_timeout_seconds,
+        )
     )
 
 

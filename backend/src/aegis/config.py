@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,3 +24,9 @@ class Settings(BaseSettings):
 
     correlation_worker_enabled: bool = True
     correlation_poll_seconds: float = 2.0
+
+    # Optional. Investigations are complete without a provider.
+    llm_provider: Literal["none", "anthropic"] = "none"
+    llm_model: str = "claude-opus-5-5"
+    llm_api_key: SecretStr | None = None
+    llm_timeout_seconds: float = 20.0
