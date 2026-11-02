@@ -20,6 +20,12 @@ a real deployment.
 | 10 | Anyone who knows a tenant ID can trigger authentication failure events and one incident | **New, limited.** At most one active incident per scope, and recording is limited per process | Medium |
 | 11 | The real LLM provider has never been called | **New.** Tested only against a mock transport | Low |
 | 12 | No dashboard content security policy | **Open** | Low |
+| 13 | Action parameters, including message bodies, are kept indefinitely in `action_requests` and `simulated_outbox`. No data has a retention or deletion path | **Open.** Found in the Phase 2 audit | Medium |
+| 14 | Any role, including read-only viewers, can read full action parameters through the approval queue | **Open.** Found in the Phase 2 audit | Medium |
+| 15 | One admin can disable a correlation rule. It is audited, but nothing alerts, and the dashboard has no view of rules | **Open** | Medium |
+| 16 | `not_visible_references` also fires on honest mistakes, such as stale links, at `high` severity. The browser tests triggered it | **Open.** Investigations state it cannot confirm a cross-tenant attempt | Medium |
+| 17 | Evidence and timelines verify each event per request, and neither has been load tested | **Open** | Low |
+| 18 | `pytest` 8.4.2 has a published advisory (PYSEC-2026-1845, fixed in 9.0.3). It is a development dependency and is not deployed | **Open** | Low |
 
 ## Proposed order of work
 
@@ -44,7 +50,8 @@ rewrite to the time since the last anchor. The API already exposes `GET /audit/h
 ### Step 4: Separation of duties (risk 5)
 
 Make agent owners real user references, then refuse approval by the agent's owner. Require a second
-admin to activate a policy version or a correlation rule change.
+admin to activate a policy version or a correlation rule change, and show rule versions in the dashboard
+(risk 15).
 
 ### Step 5: Database hardening (risk 3)
 
@@ -55,13 +62,15 @@ network access to the database at deployment.
 ### Step 6: Execution records (risks 6, 7)
 
 Store only a digest of each tool result and make retries return a status rather than content, or
-encrypt results with a retention limit. Add an operator workflow to review and resolve executions stuck
-in `STARTED`.
+encrypt results with a retention limit. Apply the same to stored action parameters, and define a retention
+policy for all of this data. Limit parameter visibility to reviewers (risks 13, 14). Add an operator
+workflow to review and resolve executions stuck in `STARTED`.
 
-### Step 7: Delivery checks (risks 8, 11, 12)
+### Step 7: Delivery checks (risks 8, 11, 12, 16, 17, 18)
 
 Run Compose on a machine with Docker and add it to CI. Run the Claude provider once against the real API
-with synthetic evidence. Add a nonce-based content security policy.
+with synthetic evidence. Add a nonce-based content security policy. Tune the `not_visible_references`
+severity using real data, load test investigations, and upgrade `pytest`.
 
 ## What Phase 2 changed for these risks
 
