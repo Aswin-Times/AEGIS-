@@ -54,7 +54,7 @@ def test_every_api_route_is_covered_by_an_auth_test(world):
             url = path
             for parameter in ("id", "cid", "tool", "resource_id", "request_id", "approval_id",
                               "agent_id", "policy_id", "decision_id", "asset_id", "event_id",
-                              "incident_id", "rule_key"):
+                              "incident_id", "rule_key", "evidence_type", "evidence_id"):
                 url = url.replace("{" + parameter + "}", str(uuid4()))
             assert "{" not in url, url
             response = world.client.request(method.upper(), url)

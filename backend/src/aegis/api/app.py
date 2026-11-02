@@ -11,9 +11,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.exceptions import HTTPException
 
-from aegis.api import routes_events, routes_incidents, routes_registry, routes_runtime
+from aegis.api import (
+    routes_events,
+    routes_incidents,
+    routes_investigation,
+    routes_registry,
+    routes_runtime,
+)
 from aegis.api.dependencies import Container
 from aegis.config import Settings
+from aegis.correlation.store import RuleIntegrityError
 from aegis.correlation.worker import CorrelationWorker
 from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
@@ -99,6 +106,13 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error_response(
             request, error.status_code, codes.get(error.status_code, "HTTP_ERROR"),
             "The request could not be completed.",
+        )
+
+    @app.exception_handler(RuleIntegrityError)
+    async def handle_rule_integrity(request: Request, error: RuleIntegrityError):
+        logger.error("a stored correlation rule failed its integrity check")
+        return _error_response(
+            request, 503, "RULE_INTEGRITY_FAILED", "A stored correlation rule cannot be trusted."
         )
 
     @app.exception_handler(IntegrityError)
@@ -194,6 +208,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     app.include_router(routes_runtime.router, prefix="/api/v1")
     app.include_router(routes_events.router, prefix="/api/v1")
     app.include_router(routes_incidents.router, prefix="/api/v1")
+    app.include_router(routes_investigation.router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=True)
     def healthz() -> dict[str, str]:

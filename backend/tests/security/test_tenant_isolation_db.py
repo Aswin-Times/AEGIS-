@@ -273,6 +273,9 @@ EXPECTED_TABLE_PRIVILEGES = {
     "incidents": {"SELECT", "INSERT"},
     "incident_events": {"SELECT", "INSERT"},
     "incident_transitions": {"SELECT", "INSERT"},
+    "investigation_runs": {"SELECT", "INSERT"},
+    "investigation_findings": {"SELECT", "INSERT"},
+    "finding_evidence": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -291,6 +294,13 @@ EXPECTED_COLUMN_UPDATES = {
         "last_observed_at",
         "assigned_to",
         "updated_at",
+    },
+    "investigation_runs": {
+        "llm_status",
+        "llm_provider",
+        "llm_model",
+        "llm_rejected_count",
+        "llm_finished_at",
     },
 }
 

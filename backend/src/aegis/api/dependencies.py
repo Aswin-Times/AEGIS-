@@ -27,6 +27,7 @@ class Container:
     tools: ToolRegistry
     failure_limiter: FailureLimiter
     clock: Callable[[], datetime] = utc_now
+    llm: object | None = None
 
 
 def get_container(request: Request) -> Container:

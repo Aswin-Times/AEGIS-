@@ -337,7 +337,8 @@ class IncidentOut(Out):
 
 class IncidentDetailOut(IncidentOut):
     transitions: list[IncidentTransitionOut]
-    rule_definition: dict[str, Any]
+    # None if the stored rule version fails its integrity check.
+    rule_definition: dict[str, Any] | None
 
 
 class RuleVersionIn(In):
@@ -350,6 +351,57 @@ class CorrelationRuleOut(Out):
     version_id: UUID
     content_hash: str
     definition: dict[str, Any]
+
+
+class EvidenceRefOut(Out):
+    type: str
+    id: str
+
+
+class TimelineItemOut(Out):
+    occurred_at: datetime
+    kind: str
+    summary: str
+    severity: str | None
+    verified: bool | None
+    evidence: EvidenceRefOut
+
+
+class InvestigationRunOut(Out):
+    id: UUID
+    incident_id: UUID
+    started_by: UUID | None
+    engine_version: int
+    input_fingerprint: str
+    llm_status: str
+    llm_provider: str | None
+    llm_model: str | None
+    llm_rejected_count: int
+    llm_finished_at: datetime | None
+    created_at: datetime
+
+
+class FindingOut(Out):
+    id: UUID
+    kind: str
+    source: str
+    statement: str
+    confidence: str | None
+    position: int
+    verified: bool
+    evidence: list[EvidenceRefOut]
+
+
+class FindingsOut(Out):
+    run: InvestigationRunOut | None
+    findings: list[FindingOut]
+
+
+class EvidenceRecordOut(Out):
+    type: str
+    id: UUID
+    occurred_at: datetime
+    fields: dict[str, Any]
 
 
 class AuditHeadOut(Out):

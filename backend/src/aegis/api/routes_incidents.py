@@ -25,7 +25,12 @@ from aegis.api.schemas import (
     RuleVersionIn,
     SecurityEventOut,
 )
-from aegis.correlation.store import create_rule_version, load_rules, parse_version
+from aegis.correlation.store import (
+    RuleIntegrityError,
+    create_rule_version,
+    load_rules,
+    parse_version,
+)
 from aegis.db.models import (
     Agent,
     AuditEvent,
@@ -95,10 +100,14 @@ def _detail(session: Session, incident_id: UUID) -> IncidentDetailOut:
         .order_by(AuditEvent.seq)
     ).scalars()
     version = session.get(CorrelationRuleVersion, incident.rule_version_id)
+    try:
+        definition = parse_version(version).model_dump(mode="json", exclude_none=True)
+    except RuleIntegrityError:
+        definition = None
     return IncidentDetailOut(
         **_incident_fields(*row),
         transitions=[IncidentTransitionOut.model_validate(item) for item in transitions],
-        rule_definition=parse_version(version).model_dump(mode="json", exclude_none=True),
+        rule_definition=definition,
     )
 
 

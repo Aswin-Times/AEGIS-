@@ -275,6 +275,47 @@ class IncidentTransition(Base):
     audit_event_id: Mapped[UUID]
 
 
+class InvestigationRun(Base):
+    __tablename__ = "investigation_runs"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    incident_id: Mapped[UUID]
+    started_by: Mapped[UUID | None]
+    engine_version: Mapped[int]
+    input_fingerprint: Mapped[str]
+    llm_status: Mapped[str]
+    llm_provider: Mapped[str | None]
+    llm_model: Mapped[str | None]
+    llm_rejected_count: Mapped[int]
+    llm_finished_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class InvestigationFinding(Base):
+    __tablename__ = "investigation_findings"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    run_id: Mapped[UUID]
+    kind: Mapped[str]
+    source: Mapped[str]
+    statement: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[str | None]
+    position: Mapped[int]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class FindingEvidence(Base):
+    __tablename__ = "finding_evidence"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    finding_id: Mapped[UUID]
+    security_event_id: Mapped[UUID | None]
+    decision_id: Mapped[UUID | None]
+    approval_id: Mapped[UUID | None]
+    execution_id: Mapped[UUID | None]
+    audit_event_id: Mapped[UUID | None]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
