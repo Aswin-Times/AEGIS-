@@ -445,10 +445,6 @@ def test_execution_stuck_in_started_is_a_gap_not_an_outcome(world, tenant, attac
 # Evidence validation
 
 
-def _collected(db, tenant, incident):
-    return db.tenant_transaction(tenant.id), incident["id"]
-
-
 def test_evidence_set_contains_only_this_incidents_records(world, db):
     tenant = world.tenant()
     incident, _, denials = make_incident(world, tenant)
@@ -555,10 +551,19 @@ def test_database_refuses_a_fact_with_no_evidence_at_commit(world, db, tenant):
 
 def test_database_refuses_llm_output_stored_as_fact(world, db, tenant):
     incident, _, _ = make_incident(world, tenant)
-    with pytest.raises(IntegrityError):
+    # Named, because the evidence trigger would also refuse this row, for a different reason.
+    with pytest.raises(IntegrityError, match="investigation_findings_check"):
         with db.tenant_transaction(tenant.id) as session:
             run = _run_row(session, tenant.id, incident["id"])
             _finding_row(session, tenant.id, run.id, source="llm")
+
+
+def test_database_refuses_a_hypothesis_not_from_the_llm(world, db, tenant):
+    incident, _, _ = make_incident(world, tenant)
+    with pytest.raises(IntegrityError, match="investigation_findings_check"):
+        with db.tenant_transaction(tenant.id) as session:
+            run = _run_row(session, tenant.id, incident["id"])
+            _finding_row(session, tenant.id, run.id, kind="ai_hypothesis")
 
 
 def _evidence_row(session, tenant_id, finding_id, **columns):

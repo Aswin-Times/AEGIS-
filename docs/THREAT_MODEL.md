@@ -212,6 +212,60 @@ at the end.
 - **Residual risk:** Medium until step-up exists. A stolen admin session has full tenant control.
 - **Verification test:** `test_authz.py`.
 
+### T21. Forged or injected security events
+- **Protected asset:** A4.
+- **Attacker capability:** ADV1, ADV3, ADV4.
+- **Attack path:** Submit an event to frame an agent or hide activity, or inject one into another tenant.
+- **Existing mitigation:** No route accepts events. Each event needs a real audit event in its own tenant (composite foreign key), and only one per source. Strict schema with allowlisted attributes.
+- **Required mitigation:** None for the current scope.
+- **Residual risk:** ADV4 can insert an audit event and let it project, which is the existing T15 limit. Reprojection catches a row altered afterwards.
+- **Verification test:** `test_security_events.py`.
+
+### T22. Evading or flooding correlation
+- **Protected asset:** Detection.
+- **Attacker capability:** ADV1, ADV2.
+- **Attack path:** Stay below a known threshold, or trigger failure events against a known tenant ID to create noise and slow the chain.
+- **Existing mitigation:** At most one active incident per rule and scope. Failure recording is limited per process, and suppressed failures are counted. Rule changes are audited.
+- **Required mitigation:** Shared-store throttling (`REMEDIATION_PLAN.md`).
+- **Residual risk:** **Slow activity below every threshold raises no incident.** The limiter is per process.
+- **Verification test:** `test_correlation.py`, `test_security_events.py::test_unauthenticated_failure_flood_is_limited_and_counted`.
+
+### T23. Duplicate or lost incidents under concurrency
+- **Protected asset:** Detection integrity.
+- **Attacker capability:** Natural concurrency, crashes, retries.
+- **Attack path:** Two workers both create an incident, or a crash loses an event.
+- **Existing mitigation:** One event per transaction, skip-locked rows, the chain lock, a partial unique index with retry, and a processed marker set in the same transaction.
+- **Required mitigation:** None for the current scope.
+- **Residual risk:** A persistent failure stops correlation for that tenant. It is visible as `pending_correlation`, and enforcement is unaffected.
+- **Verification test:** `test_correlation.py::test_concurrent_processing_creates_one_incident`.
+
+### T24. Unsupported claims in investigations
+- **Protected asset:** A4.
+- **Attacker capability:** ADV5 (tampered records), ADV6.
+- **Attack path:** A finding cites nothing, cites a record from elsewhere, or states a tampered record as fact.
+- **Existing mitigation:** Evidence is checked in the service and again by foreign keys. A deferred trigger refuses facts with no evidence. Events failing reprojection become stated gaps.
+- **Required mitigation:** None for the current scope.
+- **Residual risk:** A complete, consistent rewrite by ADV5 would still verify (T11).
+- **Verification test:** `test_investigation.py`.
+
+### T25. Prompt injection and malicious LLM output
+- **Protected asset:** A2, A4.
+- **Attacker capability:** ADV1 (agent-chosen tool names), ADV6.
+- **Attack path:** Text in the evidence steers the model, or the model tries to change state or present a guess as fact.
+- **Existing mitigation:** The model receives minimized data framed as untrusted. Output is plain data under a strict schema, stored only as `ai_hypothesis`, and each citation must be a record it was offered. The LLM package cannot reach the database or any service.
+- **Required mitigation:** None for the current scope.
+- **Residual risk:** A model can write a persuasive, wrong hypothesis that a reviewer believes. It is labeled, but that is a human risk. Accepted evidence means a record exists, not that it supports the claim.
+- **Verification test:** `test_llm_investigation.py`.
+
+### T26. Unauthorized or conflicting incident changes
+- **Protected asset:** Incident records.
+- **Attacker capability:** ADV1, ADV3.
+- **Attack path:** Close an incident to hide activity, lower its severity, or overwrite a colleague's change.
+- **Existing mitigation:** Role checks, optimistic versioning, a database transition trigger, no update grant on severity, and an audited, append-only history.
+- **Required mitigation:** Two-person closure, if required.
+- **Residual risk:** One admin can resolve and close an incident alone, although that is recorded.
+- **Verification test:** `test_incident_lifecycle.py`.
+
 ## Status
 
 | Threat | Status |
@@ -223,9 +277,14 @@ at the end.
 | T13 | Static guard only; no LLM exists |
 | T15 | Partially implemented: role separation; deployment controls are out of scope |
 | T16 | Partially implemented: no rate limiting, no OIDC |
-| T12 | Planned |
+| T12 | Implemented (T24) |
+| T21, T23, T24, T26 | Implemented for the Phase 2 scope |
+| T22 | Partially implemented: thresholds can be evaded, and the limiter is per process |
+| T25 | Implemented, but tested only with fake and mocked providers |
 
 ## Known gaps, in priority order
+
+The full plan is in `REMEDIATION_PLAN.md`.
 
 1. Free-text exfiltration to allowlisted destinations (T3).
 2. Login and agent-authentication rate limiting (T16). Each failed attempt against a real tenant

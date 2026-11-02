@@ -18,6 +18,17 @@ BACKEND = Path(__file__).resolve().parents[1]
 MIGRATION = "migrations/versions/0001_initial.py"
 GATEWAY = "src/aegis/gateway/service.py"
 SEC = "tests/security"
+EVENTS_MIGRATION = "migrations/versions/0002_security_events.py"
+INCIDENTS_MIGRATION = "migrations/versions/0003_incidents.py"
+INVESTIGATION_MIGRATION = "migrations/versions/0004_investigations.py"
+PROJECTION = "src/aegis/events/projection.py"
+RULES = "src/aegis/correlation/rules.py"
+ENGINE = "src/aegis/correlation/engine.py"
+INCIDENTS = "src/aegis/incidents/service.py"
+EVIDENCE = "src/aegis/investigation/evidence.py"
+HYPOTHESES = "src/aegis/investigation/hypotheses.py"
+INVESTIGATION = "src/aegis/investigation/service.py"
+UNIT_RULES = "tests/unit/test_correlation_rules.py"
 
 
 @dataclass(frozen=True)
@@ -45,14 +56,14 @@ MUTATIONS = [
              'if approval is None or approval.status not in ("APPROVED", "PENDING"):',
              f"{SEC}/test_approval_safety.py"),
     Mutation("Re-evaluation at execution ignored", GATEWAY,
-             "if evaluation.outcome is Outcome.DENY:\n                refused",
-             "if False:\n                refused", f"{SEC}/test_approval_safety.py"),
+             "if evaluation.outcome is Outcome.DENY:\n                    refused",
+             "if False:\n                    refused", f"{SEC}/test_approval_safety.py"),
     Mutation("Action hash not rechecked", GATEWAY,
              "elif recomputed != approval.action_hash or recomputed != request.action_hash:",
              "elif False:", f"{SEC}/test_approval_safety.py"),
     Mutation("Approval expiry not checked at execution", GATEWAY,
-             "if now >= approval.expires_at:\n            refused",
-             "if False:\n            refused",
+             "if now >= approval.expires_at:\n                refused",
+             "if False:\n                refused",
              f"{SEC}/test_approval_safety.py"),
     Mutation("Idempotency key content not compared", GATEWAY,
              "if existing is not None and existing.action_hash != action_hash:", "if False:",
@@ -104,7 +115,7 @@ MUTATIONS = [
     Mutation("Wrong agent secret accepted", "src/aegis/security/authentication.py",
              "            and matched\n", "", f"{SEC}/test_authn.py"),
     Mutation("Inactive user accepted", "src/aegis/security/authentication.py",
-             "if user is None or not user.is_active:", "if user is None:",
+             "elif user.is_active:", "else:",
              f"{SEC}/test_authn.py"),
     Mutation("JWT audience not required", "src/aegis/security/tokens.py",
              "audience=self._audience,", 'options_placeholder=None,'.replace(
@@ -150,6 +161,230 @@ MUTATIONS = [
              "FOREIGN KEY (tenant_id, request_id) REFERENCES action_requests (tenant_id, id)\n"
              "    )\n    \"\"\",\n    \"\"\"\n    CREATE TABLE simulated_outbox",
              f"{SEC}/test_approval_safety.py"),
+    # Security events
+    Mutation("Audit events not projected", "src/aegis/audit/chain.py",
+             "    project_audit_event(session, event)\n", "", f"{SEC}/test_security_events.py"),
+    Mutation("Unknown event attributes accepted", "src/aegis/events/schema.py",
+             "if expected is None:\n                raise ValueError(f\"attribute {key!r} is not "
+             "allowed\")",
+             "if expected is None:\n                continue", f"{SEC}/test_security_events.py"),
+    Mutation("Extra event fields accepted", "src/aegis/events/schema.py",
+             'model_config = ConfigDict(extra="forbid", frozen=True)',
+             'model_config = ConfigDict(extra="ignore", frozen=True)',
+             f"{SEC}/test_security_events.py"),
+    Mutation("Tampered event passes reprojection", PROJECTION,
+             "return all(getattr(event, name) == value for name, value in "
+             "record.model_dump().items())",
+             "return True", f"{SEC}/test_security_events.py"),
+    Mutation("Altered source audit event trusted", PROJECTION,
+             "if compute_event_hash(audit) != audit.event_hash:", "if False:",
+             f"{SEC}/test_security_events.py"),
+    Mutation("Attacker input copied into events", PROJECTION,
+             '"attributes": _suppressed(audit),\n        }\n\n    return build',
+             '"attributes": {"status": str(audit.payload.get("email_sha256_prefix"))},\n'
+             '        }\n\n    return build',
+             f"{SEC}/test_security_events.py"),
+    Mutation("Failure flood not limited", "src/aegis/events/limiter.py",
+             "if bucket.used >= self.limit_per_minute:", "if False:",
+             f"{SEC}/test_security_events.py"),
+    Mutation("Suppressed failures not counted", "src/aegis/events/limiter.py",
+             "bucket.suppressed += 1", "pass", f"{SEC}/test_security_events.py"),
+    Mutation("Role denials not recorded", "src/aegis/api/app.py",
+             "if principal is None or not isinstance(error, Forbidden | NotFound):",
+             "if True:", f"{SEC}/test_security_events.py"),
+    Mutation("Execution refusals not recorded", GATEWAY,
+             'event_type="approval.execution_refused"', 'event_type="test.unmapped"',
+             f"{SEC}/test_security_events.py"),
+    Mutation("Event source foreign key absent", EVENTS_MIGRATION,
+             "FOREIGN KEY (tenant_id, source_audit_event_id) REFERENCES audit_events "
+             "(tenant_id, id),\n", "", f"{SEC}/test_security_events.py"),
+    Mutation("Duplicate source allowed", EVENTS_MIGRATION,
+             "UNIQUE (tenant_id, source_audit_event_id),\n", "",
+             f"{SEC}/test_security_events.py"),
+    Mutation("Duplicate timeline guard: event links not unique", INCIDENTS_MIGRATION,
+             "PRIMARY KEY (tenant_id, incident_id, event_id),\n", "",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Event guard trigger absent", EVENTS_MIGRATION,
+             "CREATE TRIGGER security_events_guard BEFORE UPDATE OR DELETE ON security_events\n"
+             "    FOR EACH ROW EXECUTE FUNCTION aegis_security_event_guard()",
+             "SELECT 1", f"{SEC}/test_security_events.py"),
+    Mutation("Runtime role may rewrite events", EVENTS_MIGRATION,
+             '"GRANT SELECT, INSERT ON security_events TO aegis_app",',
+             '"GRANT SELECT, INSERT, UPDATE, DELETE ON security_events TO aegis_app",',
+             f"{SEC}/test_tenant_isolation_db.py"),
+    Mutation("Event RLS absent", EVENTS_MIGRATION,
+             '"ALTER TABLE security_events ENABLE ROW LEVEL SECURITY",', "",
+             f"{SEC}/test_tenant_isolation_db.py"),
+    # Correlation
+    Mutation("Threshold ignored", RULES,
+             "if len(candidate) >= rule.threshold and (", "if (", UNIT_RULES),
+    Mutation("Window ignored", RULES,
+             "ordered[end].occurred_at - first.occurred_at <= window",
+             "ordered[end].occurred_at - first.occurred_at <= window * 1000", UNIT_RULES),
+    Mutation("Distinct targets ignored", RULES,
+             "or _distinct_targets(candidate) >= rule.min_distinct_targets", "or True",
+             UNIT_RULES),
+    Mutation("Rule reason filter ignored", RULES,
+             "if match.reason_codes is not None and event.reason_code not in "
+             "match.reason_codes:",
+             "if False:", UNIT_RULES),
+    Mutation("Agents share a correlation scope", RULES,
+             'return None if identity is None else f"{rule.scope}:{identity}"',
+             'return None if identity is None else rule.scope',
+             f"{SEC}/test_correlation.py"),
+    Mutation("Linked events counted again", ENGINE,
+             "SecurityEvent.id.not_in(already_linked),\n", "",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Late events cannot form an incident", ENGINE,
+             "SecurityEvent.occurred_at >= event.occurred_at - window,",
+             "SecurityEvent.occurred_at >= event.occurred_at,",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Lateness limit ignored", ENGINE,
+             "if event.occurred_at < earliest:", "if False:", f"{SEC}/test_correlation.py"),
+    Mutation("Events not marked processed", ENGINE,
+             "event.correlation_processed_at = now\n", "pass\n",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Conflict not retried", ENGINE,
+             "if conflicts > _MAX_CONFLICT_RETRIES:", "if True:",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Duplicate active incidents allowed", INCIDENTS_MIGRATION,
+             "CREATE UNIQUE INDEX incidents_one_active", "CREATE INDEX incidents_one_active",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Tampered rule trusted", "src/aegis/correlation/store.py",
+             "if sha256_hex(version.definition_canonical) != version.content_hash:", "if False:",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Rule version not recorded", ENGINE,
+             "rule_version=loaded.version.version,", "rule_version=1,",
+             f"{SEC}/test_correlation.py"),
+    Mutation("Incident audit events feed correlation", PROJECTION,
+             '    "correlation.rule_version_created": _rule_changed,\n',
+             '    "correlation.rule_version_created": _rule_changed,\n'
+             '    "incident.created": _rule_changed,\n',
+             f"{SEC}/test_correlation.py"),
+    Mutation("Incident RLS not forced", INCIDENTS_MIGRATION,
+             'f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY",', "",
+             f"{SEC}/test_tenant_isolation_db.py"),
+    Mutation("Incident link foreign key loses its tenant", INCIDENTS_MIGRATION,
+             "FOREIGN KEY (tenant_id, event_id) REFERENCES security_events (tenant_id, id)",
+             "FOREIGN KEY (event_id) REFERENCES security_events (id)",
+             f"{SEC}/test_correlation.py"),
+    # Incident lifecycle
+    Mutation("Stale version accepted", INCIDENTS,
+             "if incident.version != expected_version:", "if False:",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Invalid transition accepted by the service", INCIDENTS,
+             "if not permitted or not can_transition(previous, definition.target):", "if False:",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Reason not required", INCIDENTS,
+             "if definition.reason_required and not reason:", "if False:",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Investigate can reopen", INCIDENTS,
+             'Verb("INVESTIGATING", allowed_from=frozenset({"OPEN", "ACKNOWLEDGED"}))',
+             'Verb("INVESTIGATING")', f"{SEC}/test_incident_lifecycle.py"),
+    # Both locks together. The row lock alone is redundant while the chain lock is held first, so
+    # removing only it changes no behavior. That was tested, and it is not a gap.
+    Mutation("Transitions take no lock", INCIDENTS,
+             "lock_chain_head(session, user.tenant_id)\n"
+             "        incident = session.execute(\n"
+             "            select(Incident).where(Incident.id == incident_id).with_for_update()",
+             "incident = session.execute(\n"
+             "            select(Incident).where(Incident.id == incident_id)",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Reviewers can close", "src/aegis/api/routes_incidents.py",
+             "incident_id: UUID, body: IncidentTransitionIn, user: AdminDep, container: "
+             "ContainerDep",
+             "incident_id: UUID, body: IncidentTransitionIn, user: ReviewerDep, container: "
+             "ContainerDep",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Viewers can change incidents", "src/aegis/api/routes_incidents.py",
+             "def incidents_acknowledge(\n    incident_id: UUID, body: IncidentTransitionIn, "
+             "user: ReviewerDep,",
+             "def incidents_acknowledge(\n    incident_id: UUID, body: IncidentTransitionIn, "
+             "user: UserDep,",
+             f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Transition trigger absent", INCIDENTS_MIGRATION,
+             "CREATE TRIGGER incidents_guard BEFORE INSERT OR UPDATE OR DELETE ON incidents\n"
+             "    FOR EACH ROW EXECUTE FUNCTION aegis_incident_guard()",
+             "SELECT 1", f"{SEC}/test_incident_lifecycle.py"),
+    Mutation("Runtime role may change severity", INCIDENTS_MIGRATION,
+             "GRANT UPDATE (status, version, event_count,",
+             "GRANT UPDATE (severity, status, version, event_count,",
+             f"{SEC}/test_tenant_isolation_db.py"),
+    Mutation("History can be rewritten", INCIDENTS_MIGRATION,
+             '"GRANT SELECT, INSERT ON incident_transitions TO aegis_app",',
+             '"GRANT SELECT, INSERT, UPDATE, DELETE ON incident_transitions TO aegis_app",',
+             f"{SEC}/test_tenant_isolation_db.py"),
+    # Investigation
+    Mutation("Facts without evidence accepted by the service", EVIDENCE,
+             "if kind in REQUIRES_EVIDENCE and not unique_refs:", "if False:",
+             f"{SEC}/test_investigation.py"),
+    Mutation("Outside evidence accepted by the service", EVIDENCE,
+             "if item.type not in _COLUMN_BY_TYPE or item not in allowed_refs:",
+             "if item.type not in _COLUMN_BY_TYPE:", f"{SEC}/test_investigation.py"),
+    Mutation("Source and kind not tied together in the service", EVIDENCE,
+             'if (source == "llm") != (kind == "ai_hypothesis"):', "if False:",
+             f"{SEC}/test_investigation.py"),
+    Mutation("Tampered events used as facts", EVIDENCE,
+             "(verified if reprojection_matches(session, event) else failed).append(event)",
+             "verified.append(event)", f"{SEC}/test_investigation.py"),
+    Mutation("Tool results exposed as evidence", "src/aegis/api/routes_investigation.py",
+             '"execution": (Execution, "started_at", ("request_id", "status", "finished_at")),',
+             '"execution": (Execution, "started_at", ("request_id", "status", "result")),',
+             f"{SEC}/test_investigation.py"),
+    Mutation("Chain failure not reported", "src/aegis/investigation/findings.py",
+             "    if chain.valid:\n        gaps.append(", "    if True:\n        gaps.append(",
+             f"{SEC}/test_investigation.py"),
+    Mutation("Evidence requirement trigger absent", INVESTIGATION_MIGRATION,
+             "CREATE CONSTRAINT TRIGGER investigation_findings_require_evidence\n"
+             "    AFTER INSERT ON investigation_findings\n"
+             "    DEFERRABLE INITIALLY DEFERRED\n"
+             "    FOR EACH ROW EXECUTE FUNCTION aegis_finding_requires_evidence()",
+             "SELECT 1", f"{SEC}/test_investigation.py"),
+    Mutation("Database stores LLM output as fact", INVESTIGATION_MIGRATION,
+             "CHECK ((source = 'llm') = (kind = 'ai_hypothesis')),\n", "",
+             f"{SEC}/test_investigation.py"),
+    Mutation("Evidence reference may hold two records", INVESTIGATION_MIGRATION,
+             ") = 1),\n", ") >= 1),\n", f"{SEC}/test_investigation.py"),
+    Mutation("Evidence foreign key loses its tenant", INVESTIGATION_MIGRATION,
+             "FOREIGN KEY (tenant_id, decision_id) REFERENCES policy_decisions (tenant_id, id),",
+             "FOREIGN KEY (decision_id) REFERENCES policy_decisions (id),",
+             f"{SEC}/test_investigation.py"),
+    Mutation("Findings can be rewritten", INVESTIGATION_MIGRATION,
+             '"GRANT SELECT, INSERT ON investigation_findings TO aegis_app",',
+             '"GRANT SELECT, INSERT, UPDATE, DELETE ON investigation_findings TO aegis_app",',
+             f"{SEC}/test_tenant_isolation_db.py"),
+    # LLM
+    Mutation("Invented citations accepted", HYPOTHESES,
+             "or any(item is None or item not in offered for item in refs)", "",
+             "tests/security/test_llm_investigation.py"),
+    Mutation("Hypothesis with no evidence accepted", HYPOTHESES,
+             "or not refs\n", "", "tests/security/test_llm_investigation.py"),
+    Mutation("Extra fields in model output accepted", HYPOTHESES,
+             'class _Hypothesis(BaseModel):\n    model_config = ConfigDict(extra="forbid")',
+             'class _Hypothesis(BaseModel):\n    model_config = ConfigDict(extra="ignore")',
+             "tests/security/test_llm_investigation.py"),
+    Mutation("Tampered events offered to the model", HYPOTHESES,
+             "for event in evidence.verified_events\n",
+             "for event in evidence.verified_events + evidence.failed_events\n",
+             "tests/security/test_llm_investigation.py"),
+    Mutation("Agent name sent to the model", HYPOTHESES,
+             '"rule_key": evidence.incident.rule_key,',
+             '"rule_key": evidence.incident.rule_key,\n'
+             '            "agent": evidence.incident.scope_key,\n'
+             '            "title": evidence.incident.title,\n'
+             '            "reason": evidence.verified_events[0].tool,',
+             "tests/unit/test_llm_prompt_shape.py"),
+    Mutation("Provider failure propagates", INVESTIGATION,
+             'return "failed", None', "raise", "tests/security/test_llm_investigation.py"),
+    Mutation("Timeout not enforced", INVESTIGATION,
+             ".result(timeout=timeout_seconds)", ".result()",
+             "tests/security/test_llm_investigation.py"),
+    Mutation("Model runs inside the transaction", INVESTIGATION,
+             "        prompt = build_prompt(evidence) if llm else None\n",
+             "        prompt = build_prompt(evidence) if llm else None\n"
+             "        if llm:\n"
+             "            _ask_model(llm, prompt, llm_timeout_seconds)\n",
+             "tests/security/test_llm_investigation.py"),
 ]
 
 

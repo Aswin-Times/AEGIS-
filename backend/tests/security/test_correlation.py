@@ -17,6 +17,7 @@ import aegis
 from aegis.api.app import create_app
 from aegis.config import Settings
 from aegis.correlation.engine import pending_tenants, process_tenant
+from aegis.correlation.worker import CorrelationWorker
 from aegis.db.models import Incident, IncidentEvent, SecurityEvent
 from aegis.db.session import Database
 from aegis.security.agent_keys import format_key, parse_key
@@ -383,6 +384,107 @@ def test_a_conflicting_incident_is_retried_rather_than_lost(world, tenant, db, m
     assert tenant.get("/overview").json()["pending_correlation"] == 0
 
 
+def _assert_no_duplicates(tenant):
+    """Nothing is repeated across incidents, their links, or their timelines."""
+    incidents = incidents_of(tenant)
+    active = [
+        (item["rule_key"], item["scope_key"])
+        for item in incidents
+        if item["status"] in ("OPEN", "ACKNOWLEDGED", "INVESTIGATING")
+    ]
+    assert len(active) == len(set(active))
+    for incident in incidents:
+        linked = incident_events(tenant, incident)
+        identifiers = [item["id"] for item in linked]
+        assert len(identifiers) == len(set(identifiers))
+        assert len(identifiers) == incident["event_count"]
+        timeline = tenant.get(f"/incidents/{incident['id']}/timeline").json()["items"]
+        entries = [(item["kind"], item["evidence"]["id"]) for item in timeline]
+        assert len(entries) == len(set(entries))
+        events_on_timeline = [
+            item["evidence"]["id"]
+            for item in timeline
+            if item["evidence"]["type"] == "security_event"
+        ]
+        assert sorted(events_on_timeline) == sorted(identifiers)
+
+
+def test_repeat_and_concurrent_processing_create_no_duplicate_timeline_entries(world, tenant):
+    tenant.allow_everything()
+    agent = tenant.agent()
+    attempt_forbidden_tool(agent, 12)
+    container = world.app.state.container
+    barrier = Barrier(6)
+
+    def run(_):
+        barrier.wait()
+        return process_tenant(container.db, tenant.id, clock=container.clock)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(run, range(6)))
+    correlate(world, tenant)
+    correlate(world, tenant)
+
+    _assert_no_duplicates(tenant)
+    assert incidents_of(tenant, rule_key="repeated_unauthorized_tools")[0]["event_count"] == 12
+
+
+def test_two_background_workers_create_one_incident(world, tenant):
+    tenant.allow_everything()
+    agent = tenant.agent()
+    attempt_forbidden_tool(agent, 10)
+    container = world.app.state.container
+    workers = [CorrelationWorker(container.db, container.clock, 0.05) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    try:
+        deadline = time.monotonic() + 30
+        while (
+            time.monotonic() < deadline
+            and tenant.get("/overview").json()["pending_correlation"] > 0
+        ):
+            time.sleep(0.1)
+    finally:
+        for worker in workers:
+            worker.stop()
+
+    assert tenant.get("/overview").json()["pending_correlation"] == 0
+    assert len(incidents_of(tenant, rule_key="repeated_unauthorized_tools")) == 1
+    assert incidents_of(tenant, rule_key="repeated_unauthorized_tools")[0]["event_count"] == 10
+    _assert_no_duplicates(tenant)
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_a_crash_mid_processing_leaves_nothing_partial_and_recovers(world, tenant, monkeypatch):
+    """A failure after the incident row exists rolls it back, and the event stays pending."""
+    import aegis.correlation.engine as engine
+
+    tenant.allow_everything()
+    attempt_forbidden_tool(tenant.agent(), 3)
+    audit_before = len(tenant.audit_events("incident.created"))
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("synthetic crash after the incident was inserted")
+
+    monkeypatch.setattr(engine, "_refresh_counts", crash)
+    result = correlate(world, tenant)
+    monkeypatch.undo()
+
+    assert result.halted is True
+    assert incidents_of(tenant) == []
+    assert len(tenant.audit_events("incident.created")) == audit_before
+    assert tenant.get("/overview").json()["pending_correlation"] > 0
+
+    recovered = correlate(world, tenant)
+
+    assert recovered.halted is False
+    assert recovered.incidents_created == 1
+    assert len(incidents_of(tenant)) == 1
+    assert tenant.get("/overview").json()["pending_correlation"] == 0
+    _assert_no_duplicates(tenant)
+    assert tenant.verify_audit()["valid"] is True
+
+
 # Out-of-order events
 
 
@@ -580,8 +682,15 @@ def test_rule_versions_are_immutable_for_the_runtime_role(world, tenant, db):
             session.execute(text(statement))
 
 
+@pytest.mark.parametrize(
+    "threshold",
+    [
+        9999,  # Valid in shape, so only the content hash can catch it.
+        1000000,  # Also out of range.
+    ],
+)
 def test_tampered_rule_stops_correlation_and_leaves_a_visible_backlog(
-    world, tenant, attacker_sql
+    world, tenant, attacker_sql, threshold
 ):
     tenant.allow_everything()
     tenant.get("/correlation-rules")
@@ -592,10 +701,10 @@ def test_tampered_rule_stops_correlation_and_leaves_a_visible_backlog(
             """
             UPDATE correlation_rule_versions
             SET definition_canonical = replace(definition_canonical, '"threshold":3',
-                                               '"threshold":1000000')
+                                               %s)
             WHERE tenant_id = %s AND rule_key = 'repeated_unauthorized_tools'
             """,
-            (tenant.id,),
+            (f'"threshold":{threshold}', tenant.id),
         )
     finally:
         attacker_sql.execute("ALTER TABLE correlation_rule_versions ENABLE TRIGGER USER")

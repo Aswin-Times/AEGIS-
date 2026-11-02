@@ -44,14 +44,20 @@ backend/tests/
 | Audit integrity | `security/test_audit_integrity.py` |
 | Database privileges and catalog | `security/test_tenant_isolation_db.py` |
 | Dashboard, full stack | `frontend/e2e/dashboard.spec.ts` |
-| Investigation integrity | **Not yet: the feature does not exist (Phase 4)** |
+| Security events | `security/test_security_events.py` |
+| Correlation | `security/test_correlation.py`, `unit/test_correlation_rules.py` |
+| Incident lifecycle | `security/test_incident_lifecycle.py` |
+| Investigation integrity | `security/test_investigation.py` |
+| LLM layer | `security/test_llm_investigation.py`, `unit/test_llm_prompt_shape.py`. Fake providers and a mock transport only |
 
 ## Proving the tests can fail
 
 `backend/scripts/mutation_check.py` copies the backend to a temporary directory, removes one
 security control at a time (a role check, a grant, a trigger, a re-evaluation), and requires a
 test to fail. A control whose removal goes unnoticed is reported as `SURVIVED`. Its first run
-found four such gaps, which led to new tests. Run it after changing an enforcement path.
+found four such gaps, and its run over the Phase 2 controls found eight more. All twelve were weak tests or
+redundant locks rather than missing enforcement, and each led to a stronger test. Run it after changing an
+enforcement path.
 
 ## Static guards
 

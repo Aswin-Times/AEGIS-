@@ -384,6 +384,15 @@ def test_database_rejects_an_event_with_no_source(db, new_tenant):
         _raw_event_insert(session, tenant_id, uuid4())
 
 
+def test_database_rejects_a_second_event_from_the_same_source(db, new_tenant):
+    """The event ID is deterministic, so this needs a different ID to reach the constraint."""
+    tenant_id = new_tenant()
+    source = _audit(db, tenant_id)
+    with pytest.raises(IntegrityError, match="security_events_tenant_id_source_audit_event_id_key"):
+        with db.tenant_transaction(tenant_id) as session:
+            _raw_event_insert(session, tenant_id, source.id)
+
+
 def test_database_rejects_an_event_sourced_from_another_tenant(db, new_tenant):
     tenant_a, tenant_b = new_tenant(), new_tenant()
     source = _audit(db, tenant_b)
@@ -509,6 +518,25 @@ def test_tampered_event_fails_reprojection(db, tenant, attacker_sql):
         )
     finally:
         attacker_sql.execute("ALTER TABLE security_events ENABLE TRIGGER USER")
+    with db.tenant_transaction(tenant.id) as session:
+        event = session.execute(
+            select(SecurityEvent).where(SecurityEvent.event_type == "authz.denied")
+        ).scalar_one()
+        assert reprojection_matches(session, event) is False
+
+
+def test_altered_source_audit_event_fails_reprojection(db, tenant, attacker_sql):
+    """The projection ignores this field, so only the source hash can reveal the change."""
+    tenant.post("/policies", {"name": "x"}, headers=tenant.viewer)
+    attacker_sql.execute("ALTER TABLE audit_events DISABLE TRIGGER USER")
+    try:
+        attacker_sql.execute(
+            "UPDATE audit_events SET payload = '{\"forged\": true}' "
+            "WHERE tenant_id = %s AND event_type = 'authz.denied'",
+            (tenant.id,),
+        )
+    finally:
+        attacker_sql.execute("ALTER TABLE audit_events ENABLE TRIGGER USER")
     with db.tenant_transaction(tenant.id) as session:
         event = session.execute(
             select(SecurityEvent).where(SecurityEvent.event_type == "authz.denied")

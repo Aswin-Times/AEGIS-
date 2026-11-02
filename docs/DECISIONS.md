@@ -103,3 +103,43 @@ currently shows policy decisions, the only event source that exists.
 ## D-018: Playwright with the installed browser
 **Decision:** End-to-end tests use `channel: msedge` locally. **Why:** It needs no browser
 download, and it works without a visible window. **Cost:** Results come from one browser engine.
+
+## D-019: Security events are projected from the audit chain
+**Decision:** One security event per relevant audit event, in the same transaction. **Why:** One source
+of truth, atomic evidence, and a way to verify a stored event by reprojecting it. **Cost:** Changing a
+mapping requires a new schema version, or older events would fail verification.
+
+## D-020: Correlation runs after commit, in an in-process worker
+**Decision:** A polling thread, not Redis Streams and not inside the gateway transaction. **Why:**
+Enforcement must not depend on detection, and a database table already gives durable, retryable work
+with no new infrastructure. **Cost:** Detection lags by a poll interval, and it runs per API process, so
+several processes rely on row locks and the unique index to cooperate.
+
+## D-021: One event per correlation transaction, holding the chain lock
+**Decision:** Each event gets its own transaction, and takes the chain head first. **Why:** Simple
+reasoning about retries, serial correlation per tenant, and a single lock order with incident changes
+to prevent deadlock. **Cost:** Correlation contends with gateway decisions for the same tenant. Acceptable
+for the MVP, and measured only by the concurrency tests, not under load.
+
+## D-022: Failure recording is limited, and the count is kept
+**Decision:** After the limit, failed authentications are counted and not individually recorded. **Why:**
+An unauthenticated attacker could otherwise write without limit to a tamper-evident log that also drives
+incidents. **Cost:** Individual records are lost past the limit, and the limit is per process.
+
+## D-023: AEGIS does not check whether a missing ID exists elsewhere
+**Decision:** A reference to an invisible ID is recorded in the attempting tenant only. **Why:** Checking
+across tenants would need a privileged query, and acting on the answer would reveal that the ID exists.
+**Cost:** Scenario E can show a suspicious pattern, never a confirmed cross-tenant attempt, and the owning
+tenant is not told.
+
+## D-024: Evidence through a single allowlisted route
+**Decision:** `GET /evidence/{type}/{id}` returns named fields only. **Why:** Every reference in a finding
+needs one place to lead, and a new column must not appear by default. **Cost:** A new evidence type needs
+a route entry.
+
+## D-025: The Claude provider uses the official SDK, as an optional extra
+**Decision:** `anthropic` is installed only with the `llm` extra and imported only by one module, using
+`claude-opus-5-5` with `fallbacks: "default"`. **Why:** The SDK handles retries and errors, nothing else in
+AEGIS should depend on a provider, and a server-side fallback means a classifier decline can still produce
+hypotheses. **Cost:** The fallback may answer from another model, recorded only as a success under the
+configured model. Tested against a mock transport, not the real API.

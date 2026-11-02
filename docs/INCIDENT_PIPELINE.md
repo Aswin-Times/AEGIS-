@@ -74,7 +74,7 @@ classification, or a server-assigned code.
 
 | Event type | Source audit event | Severity |
 |------------|--------------------|----------|
-| `gateway.action_denied` | `action.decision` with `DENY` | By reason: `high` for an unknown tool or a clearance failure, `low` for a policy or parameter problem, otherwise `medium` |
+| `gateway.action_denied` | `action.decision` with `DENY` | By reason: `high` for an unknown tool, a clearance failure, or an invalid policy; `low` for bad parameters or no active policy; otherwise `medium` |
 | `gateway.approval_required` | `action.decision` with `REQUIRE_APPROVAL` | `info` |
 | `gateway.execution_refused` | `approval.execution_refused` (new) | `medium` |
 | `approval.approved` / `approval.rejected` | same | `info` / `low` |
@@ -103,6 +103,10 @@ affects the pipeline. Failure *recording* is limited per tenant and kind in each
 (`attributes.suppressed_since_last`), so the count stays visible. The caller's response is
 unchanged. This protects the pipeline, and it is **not** login rate limiting: attempts are still
 processed. It is also per process.
+
+`auth.token_rejected` is rare by design: it means a token with a valid AEGIS signature named a user who
+is not in that token's tenant. A tampered tenant segment on an agent key is recorded as
+`auth.agent_failed` in the tenant it names, so it also counts toward `authentication_failures`.
 
 ## Correlation
 

@@ -254,6 +254,26 @@ def test_malformed_output_keeps_the_deterministic_results(world, tenant, raw):
     assert deterministic_statements(result) == expected
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"kind": "observed_fact"},
+        {"verified": True},
+        {"source": "deterministic"},
+        {"incident_status": "CLOSED"},
+    ],
+)
+def test_extra_fields_on_an_otherwise_supported_hypothesis_are_rejected(world, tenant, extra):
+    """The citation here is real, so only the schema can be what refuses this reply."""
+    incident, _, _ = make_incident(world, tenant)
+    use(world, FakeProvider(lambda request: {"hypotheses": [{**hypothesis(request), **extra}]}))
+
+    run = investigate(tenant, incident)
+
+    assert run["llm_status"] == "invalid_output"
+    assert of_kind(findings(tenant, incident), "ai_hypothesis") == []
+
+
 def test_timeout_keeps_the_deterministic_results_and_returns_promptly(world, tenant):
     incident, _, _ = make_incident(world, tenant)
     expected = baseline(world, tenant, incident)
@@ -401,19 +421,25 @@ def test_the_provider_runs_outside_any_transaction(world, tenant):
     """A slow model must not hold the audit chain, or it would stall enforcement."""
     incident, _, _ = make_incident(world, tenant)
     container = world.app.state.container
-    observed = []
+    outcomes = []
 
     def write_while_running(request):
-        with container.db.tenant_transaction(tenant.id) as session:
-            session.execute(text("SET LOCAL lock_timeout = '2s'"))
-            append_event(session, tenant.id, event_type="test.during_llm", actor_type="system")
-            observed.append("written")
+        try:
+            with container.db.tenant_transaction(tenant.id) as session:
+                session.execute(text("SET LOCAL lock_timeout = '2s'"))
+                append_event(session, tenant.id, event_type="test.during_llm", actor_type="system")
+            outcomes.append("written")
+        except Exception as error:
+            outcomes.append(type(error).__name__)
+            raise
         return {"hypotheses": []}
 
-    use(world, FakeProvider(write_while_running))
+    provider = use(world, FakeProvider(write_while_running))
     run = investigate(tenant, incident)
 
-    assert observed == ["written"]
+    # Every attempt counts: one blocked call must not be hidden by a later one that succeeds.
+    assert outcomes == ["written"]
+    assert len(provider.requests) == 1
     assert run["llm_status"] == "succeeded"
 
 

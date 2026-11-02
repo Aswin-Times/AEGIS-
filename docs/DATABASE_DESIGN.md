@@ -50,12 +50,22 @@ tenants 1--* users
 | `audit_chain_heads` | `tenant_id` PK, `seq`, `head_hash` | Row lock serializes appends per tenant |
 | `audit_events` | `id`, `seq`, `prev_hash`, `event_hash`, `event_type`, `actor_type`, `actor_id`, `correlation_id`, `subject_type`, `subject_id`, `policy_version_id`, `occurred_at`, `payload` | `UNIQUE (tenant_id, seq)`; append-only |
 
-## Deferred tables (Phase 4)
+## Phase 2 tables
 
-`security_events`, `incidents`, `incident_events`, `incident_findings`,
-`governance_assessments`. `incident_findings` will distinguish `kind` values
-(`observed_fact`, `deterministic_finding`, `ai_hypothesis`, `unverified_assumption`,
-`recommended_action`). A fact must reference an event through a real foreign key.
+| Table | Key columns | Notes |
+|-------|-------------|-------|
+| `security_events` | See `INCIDENT_PIPELINE.md` | `UNIQUE (tenant_id, source_audit_event_id)`. Composite foreign keys to the audit event, agent, decision, approval, and execution. A trigger allows only the processing marker to change, once |
+| `correlation_rule_versions` | `rule_key`, `version`, `definition_canonical`, `content_hash`, `created_by` | Immutable. `created_by` is null for built-in defaults |
+| `incidents` | `rule_version_id`, `rule_key`, `rule_version`, `scope_key`, `severity`, `status`, `version`, `event_count`, first and last observed | Partial unique index `incidents_one_active`. A trigger enforces transitions and makes identity and severity immutable |
+| `incident_events` | `incident_id`, `event_id` | Composite primary key. Append-only |
+| `incident_transitions` | `from_status`, `to_status`, actor, `reason`, `occurred_at`, `audit_event_id` | Append-only, with a required audit event |
+| `investigation_runs` | `incident_id`, `started_by`, `input_fingerprint`, `llm_status` | Only the LLM status columns can be updated |
+| `investigation_findings` | `run_id`, `kind`, `source`, `statement`, `position` | Append-only. `CHECK ((source = 'llm') = (kind = 'ai_hypothesis'))`. A deferred constraint trigger requires evidence for facts, rule results, and hypotheses |
+| `finding_evidence` | One nullable foreign key per record type | `CHECK (num_nonnulls(...) = 1)`. All composite, so another tenant's record cannot be referenced |
+
+## Deferred tables
+
+`governance_assessments`.
 
 `users.role` is a single fixed role. A roles-and-permissions table has no use until
 custom roles are a requirement (`DECISIONS.md` D-009).
@@ -74,7 +84,10 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT` only | `users` |
 | `SELECT`, `UPDATE (active_policy_version_id)` | `tenants` |
 | `SELECT`, `UPDATE (seq, head_hash)` | `audit_chain_heads` |
-| `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events` |
+| `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence` |
+| `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
+| `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |
+| `SELECT, INSERT`, `UPDATE (llm_status, llm_provider, llm_model, llm_rejected_count, llm_finished_at)` | `investigation_runs` |
 | `SELECT, INSERT`, `UPDATE (status)` | `agents` |
 | `SELECT, INSERT`, `UPDATE (revoked_at)` | `agent_credentials` |
 | `SELECT, INSERT`, `UPDATE (status, decided_by, decided_at, comment)` | `approvals` |
@@ -88,6 +101,12 @@ only be created by the owner role, through `aegis.provisioning`.
 
 A request's current state is read from its decision, approval, and execution rows, so
 `action_requests` can stay insert-only.
+
+## `aegis_tenants_with_pending_events()`
+
+The second and only other `SECURITY DEFINER` function. The correlation worker must find work without a
+tenant context, so this returns tenant IDs only. The matching owner policy exposes only unprocessed
+rows. A test fails if any other such function appears.
 
 ## `aegis_resolve_tenant(slug)`
 

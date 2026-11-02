@@ -28,6 +28,7 @@ deployable yet (see `DECISIONS.md` D-001).
  |  /approvals -> state machine, row locks, action-hash binding |
  |  /registry, /policies, /audit, /events: control plane        |
  +--------------------------------------------------------------+
+      |  background worker: correlates events into incidents after commit
       | connects as aegis_app (NOSUPERUSER, NOBYPASSRLS)
       v
  PostgreSQL: RLS on every tenant table, composite tenant FKs,
@@ -45,6 +46,11 @@ deployable yet (see `DECISIONS.md` D-001).
 | `aegis.approvals` | State machine, reviewer actions | Execute tools |
 | `aegis.audit` | Append, canonicalize, hash, verify | Expose update or delete |
 | `aegis.registry` | Assets, agents, credentials, grants | Let an agent principal call it |
+| `aegis.events` | Project audit events into minimal security events | Accept events from outside the backend, or copy parameters and results |
+| `aegis.correlation` | Versioned rules and the worker that creates incidents | Reach enforcement code, or be required for an action to proceed |
+| `aegis.incidents` | The state machine and authorized transitions | Be reachable by agents or by the LLM layer |
+| `aegis.investigation` | Timelines, evidence checks, deterministic findings | Change an incident, or store an uncited fact |
+| `aegis.llm` | Turn text into text through a provider | Touch the database or any service |
 | `aegis.api` | HTTP, schemas, error mapping | Contain policy logic |
 
 ## Trust boundaries
@@ -129,6 +135,6 @@ never accepted on tenant-scoped endpoints.
 | Tests | pytest against real PostgreSQL; hypothesis for engine properties; Playwright end to end |
 | Local dev | Docker Compose, or embedded PostgreSQL when Docker is absent |
 
-Redis Streams, OpenTelemetry export, OPA, and the LLM adapter are deferred until a
-requirement needs them (`DECISIONS.md`). Decisions stay synchronous at the execution
-boundary regardless.
+Redis Streams, OpenTelemetry export, and OPA are deferred until a requirement needs them
+(`DECISIONS.md`). Decisions stay synchronous at the execution boundary regardless. The pipeline
+from events to investigations is described in `INCIDENT_PIPELINE.md`.

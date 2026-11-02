@@ -106,6 +106,7 @@ def test_full_lifecycle_records_every_change(world, tenant):
         ([("investigate", None)], "investigate", None),
         ([("resolve", "x")], "acknowledge", None),
         ([("resolve", "x")], "resolve", "x"),
+        ([("resolve", "x")], "investigate", None),  # Only "reopen", with a reason, may do this.
         ([("acknowledge", None)], "reopen", "x"),
         ([], "reopen", "x"),
     ],

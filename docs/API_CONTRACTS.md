@@ -26,7 +26,7 @@ Every error has this shape. Stack traces and internal details are never returned
 | 411 | Chunked body refused, so that size can be checked up front | `LENGTH_REQUIRED` |
 | 413 | Body over 64 KiB | `PAYLOAD_TOO_LARGE` |
 | 422 | Validation failure | `VALIDATION_ERROR` |
-| 503 | Fail-closed dependency failure | `SERVICE_UNAVAILABLE` |
+| 503 | Fail-closed dependency failure | `SERVICE_UNAVAILABLE`, `RULE_INTEGRITY_FAILED` |
 
 A policy **deny is not an HTTP error**. It returns 200 from the gateway with
 `outcome: "DENY"`, because the request was handled correctly.
@@ -186,7 +186,52 @@ a re-evaluation that is not a deny. Otherwise 409, and the action is not execute
 
 `GET /overview`: counts derived from stored records. No estimates.
 
-## Deferred routes (Phase 4)
+## Security events (user)
 
-`/events`, `/incidents`, `/governance`, `/tenants`. They do not exist yet and are not
-mocked.
+Read-only over HTTP: there is deliberately no way to submit one.
+
+| Method, path | Role | Notes |
+|--------------|------|-------|
+| `GET /events` | Any | Filter `event_type`, `severity`, `agent_id`. Includes `incident_ids` |
+| `GET /events/{event_id}` | Any | |
+
+## Incidents (user)
+
+There is no route to create an incident. Only correlation can.
+
+| Method, path | Role | Notes |
+|--------------|------|-------|
+| `GET /incidents` | Any | Filter `status`, `severity`, `rule_key` |
+| `GET /incidents/{incident_id}` | Any | Includes `transitions` and `rule_definition`, which is `null` if the rule fails its integrity check |
+| `GET /incidents/{incident_id}/events` | Any | The source events |
+| `GET /incidents/{incident_id}/timeline` | Any | Rebuilt from stored records on each request |
+| `POST /incidents/{incident_id}/acknowledge` | reviewer, admin | Body `expected_version`, optional `reason` |
+| `POST /incidents/{incident_id}/investigate` | reviewer, admin | Same. Only from `OPEN` or `ACKNOWLEDGED` |
+| `POST /incidents/{incident_id}/resolve` | reviewer, admin | `reason` required |
+| `POST /incidents/{incident_id}/reopen` | reviewer, admin | `reason` required. Only from `RESOLVED` |
+| `POST /incidents/{incident_id}/close` | admin | `reason` required. Only from `RESOLVED`. Final |
+
+Errors: 409 `INCIDENT_VERSION_CONFLICT`, `INVALID_STATE_TRANSITION`, or `ACTIVE_INCIDENT_EXISTS`. 422
+when a required reason is missing.
+
+## Investigations (user)
+
+| Method, path | Role | Notes |
+|--------------|------|-------|
+| `POST /incidents/{incident_id}/investigation-runs` | reviewer, admin | Creates an immutable run. Changes nothing else |
+| `GET /incidents/{incident_id}/investigation-runs` | Any | Newest first |
+| `GET /incidents/{incident_id}/findings` | Any | Latest run, or `run_id` for an earlier one. `verified` is derived from kind and source |
+| `GET /evidence/{evidence_type}/{evidence_id}` | Any | `security_event`, `policy_decision`, `approval`, `execution`, or `audit_event`. Allowlisted fields only: never tool results, parameters, or message bodies |
+
+## Correlation rules (user)
+
+| Method, path | Role | Notes |
+|--------------|------|-------|
+| `GET /correlation-rules` | Any | The newest version of each rule |
+| `POST /correlation-rules/{rule_key}/versions` | admin | Body `definition`. Creates a new immutable version. Audited |
+
+`GET /overview` also returns `active_incidents` and `pending_correlation`.
+
+## Deferred routes
+
+`/governance` and `/tenants` do not exist yet and are not mocked.
