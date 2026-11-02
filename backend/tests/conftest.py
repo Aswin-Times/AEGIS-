@@ -104,3 +104,44 @@ def jwt_key_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
         )
     )
     return path
+
+
+@dataclass
+class World:
+    client: object
+    app: object
+    spy: object
+    urls: DatabaseUrls
+
+    def tenant(self):
+        from support import TenantWorld
+
+        slug = f"t-{uuid4().hex[:16]}"
+        tenant_id = provision_tenant(self.urls.owner, slug=slug, name=f"Synthetic {slug}")
+        return TenantWorld(self.client, self.urls, tenant_id, slug)
+
+
+@pytest.fixture
+def world(urls: DatabaseUrls, jwt_key_path: Path) -> Iterator[World]:
+    from fastapi.testclient import TestClient
+    from support import ToolSpy
+
+    from aegis.api.app import create_app
+    from aegis.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url=urls.app,
+        jwt_private_key_path=jwt_key_path,
+    )
+    spy = ToolSpy()
+    app = create_app(settings, tools=spy.registry())
+    # raise_server_exceptions=False: assert on what a client really receives on a 500.
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield World(client=client, app=app, spy=spy, urls=urls)
+
+
+@pytest.fixture
+def tenant(world: World):
+    return world.tenant()

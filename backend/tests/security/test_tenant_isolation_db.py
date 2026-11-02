@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 
+from aegis.api.app import UnsafeDatabaseRole, assert_runtime_role_is_restricted
 from aegis.audit.chain import append_event
 from aegis.db.models import AiAsset, AuditEvent, Tenant
 from aegis.db.session import Database
@@ -232,3 +233,18 @@ def test_audit_append_works_for_runtime_role(db, new_tenant):
         event = append_event(session, tenant, event_type="test.event", actor_type="system")
     with db.tenant_transaction(tenant) as session:
         assert session.get(AuditEvent, event.id).seq == 2
+
+
+@pytest.mark.parametrize("attr", ["superuser", "owner"])
+def test_api_refuses_to_start_with_a_privileged_database_role(urls, attr):
+    url = getattr(urls, attr).replace("postgresql://", "postgresql+psycopg://")
+    database = Database(url, pool_size=1, max_overflow=0)
+    try:
+        with pytest.raises(UnsafeDatabaseRole):
+            assert_runtime_role_is_restricted(database)
+    finally:
+        database.dispose()
+
+
+def test_api_starts_with_the_restricted_role(db):
+    assert_runtime_role_is_restricted(db)
