@@ -32,6 +32,8 @@ def _user_routes():
         ("POST", "/api/v1/audit/verify"),
         ("GET", "/api/v1/overview"),
         ("GET", "/api/v1/events"),
+        ("GET", "/api/v1/incidents"),
+        ("GET", "/api/v1/correlation-rules"),
     ]
 
 
@@ -51,7 +53,8 @@ def test_every_api_route_is_covered_by_an_auth_test(world):
                 continue
             url = path
             for parameter in ("id", "cid", "tool", "resource_id", "request_id", "approval_id",
-                              "agent_id", "policy_id", "decision_id", "asset_id", "event_id"):
+                              "agent_id", "policy_id", "decision_id", "asset_id", "event_id",
+                              "incident_id", "rule_key"):
                 url = url.replace("{" + parameter + "}", str(uuid4()))
             assert "{" not in url, url
             response = world.client.request(method.upper(), url)

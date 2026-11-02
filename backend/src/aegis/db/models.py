@@ -219,6 +219,62 @@ class SecurityEvent(Base):
     correlation_processed_at: Mapped[datetime | None]
 
 
+class CorrelationRuleVersion(Base):
+    __tablename__ = "correlation_rule_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    rule_key: Mapped[str]
+    version: Mapped[int]
+    definition_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    created_by: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    rule_version_id: Mapped[UUID]
+    rule_key: Mapped[str]
+    rule_version: Mapped[int]
+    scope_type: Mapped[str]
+    scope_key: Mapped[str]
+    agent_id: Mapped[UUID | None]
+    title: Mapped[str]
+    severity: Mapped[str]
+    status: Mapped[str]
+    version: Mapped[int]
+    event_count: Mapped[int]
+    first_observed_at: Mapped[datetime]
+    last_observed_at: Mapped[datetime]
+    assigned_to: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _created_at()
+
+
+class IncidentEvent(Base):
+    __tablename__ = "incident_events"
+    tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
+    incident_id: Mapped[UUID] = mapped_column(primary_key=True)
+    event_id: Mapped[UUID] = mapped_column(primary_key=True)
+    linked_at: Mapped[datetime] = _created_at()
+
+
+class IncidentTransition(Base):
+    __tablename__ = "incident_transitions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    incident_id: Mapped[UUID]
+    from_status: Mapped[str | None]
+    to_status: Mapped[str]
+    actor_type: Mapped[str]
+    actor_id: Mapped[UUID | None]
+    reason: Mapped[str | None]
+    occurred_at: Mapped[datetime]
+    audit_event_id: Mapped[UUID]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

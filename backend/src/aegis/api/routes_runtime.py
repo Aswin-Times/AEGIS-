@@ -42,11 +42,14 @@ from aegis.db.models import (
     AuditChainHead,
     AuditEvent,
     Execution,
+    Incident,
     PolicyDecision,
+    SecurityEvent,
     Tenant,
 )
 from aegis.errors import NotFound
 from aegis.gateway import service as gateway
+from aegis.incidents.state import ACTIVE_STATUSES
 from aegis.security.authentication import login
 
 router = APIRouter()
@@ -279,6 +282,10 @@ def overview(user: UserDep, container: ContainerDep):
             pending_approvals=count(session, Approval, Approval.status == "PENDING"),
             executions=count(session, Execution),
             audit_events=count(session, AuditEvent),
+            active_incidents=count(session, Incident, Incident.status.in_(ACTIVE_STATUSES)),
+            pending_correlation=count(
+                session, SecurityEvent, SecurityEvent.correlation_processed_at.is_(None)
+            ),
             active_policy_version_id=session.get(
                 Tenant, user.tenant_id
             ).active_policy_version_id,

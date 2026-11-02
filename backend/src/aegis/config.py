@@ -20,3 +20,6 @@ class Settings(BaseSettings):
     approval_ttl_seconds: int = 86_400
     max_body_bytes: int = 65_536
     failure_events_per_minute: int = 60
+
+    correlation_worker_enabled: bool = True
+    correlation_poll_seconds: float = 2.0

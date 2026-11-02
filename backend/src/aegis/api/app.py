@@ -11,9 +11,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.exceptions import HTTPException
 
-from aegis.api import routes_events, routes_registry, routes_runtime
+from aegis.api import routes_events, routes_incidents, routes_registry, routes_runtime
 from aegis.api.dependencies import Container
 from aegis.config import Settings
+from aegis.correlation.worker import CorrelationWorker
 from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
@@ -132,7 +133,16 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         assert_runtime_role_is_restricted(db)
+        worker = None
+        if settings.correlation_worker_enabled:
+            # Read the clock through the container, so a test can move it.
+            worker = CorrelationWorker(
+                db, lambda: container.clock(), settings.correlation_poll_seconds
+            )
+            worker.start()
         yield
+        if worker is not None:
+            worker.stop()
         db.dispose()
 
     docs_enabled = settings.environment == "development"
@@ -183,6 +193,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     app.include_router(routes_registry.router, prefix="/api/v1")
     app.include_router(routes_runtime.router, prefix="/api/v1")
     app.include_router(routes_events.router, prefix="/api/v1")
+    app.include_router(routes_incidents.router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=True)
     def healthz() -> dict[str, str]:

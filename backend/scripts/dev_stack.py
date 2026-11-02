@@ -18,9 +18,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+from backfill_events import backfill_all
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-from backfill_events import backfill_all
 from seed_demo import seed
 
 from aegis.db.bootstrap import ensure_roles_and_database, run_migrations

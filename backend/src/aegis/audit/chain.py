@@ -55,6 +55,15 @@ def compute_event_hash(event: AuditEvent) -> str:
     )
 
 
+def lock_chain_head(session: Session, tenant_id: UUID) -> None:
+    """Take the lock append_event would take, for callers that must lock it first."""
+    session.execute(
+        select(AuditChainHead.tenant_id)
+        .where(AuditChainHead.tenant_id == tenant_id)
+        .with_for_update()
+    )
+
+
 def append_event(
     session: Session,
     tenant_id: UUID,

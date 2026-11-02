@@ -269,6 +269,10 @@ EXPECTED_TABLE_PRIVILEGES = {
     "audit_chain_heads": {"SELECT"},
     "audit_events": {"SELECT", "INSERT"},
     "security_events": {"SELECT", "INSERT"},
+    "correlation_rule_versions": {"SELECT", "INSERT"},
+    "incidents": {"SELECT", "INSERT"},
+    "incident_events": {"SELECT", "INSERT"},
+    "incident_transitions": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -279,6 +283,15 @@ EXPECTED_COLUMN_UPDATES = {
     "executions": {"status", "result", "finished_at"},
     "audit_chain_heads": {"seq", "head_hash"},
     "security_events": {"correlation_processed_at"},
+    "incidents": {
+        "status",
+        "version",
+        "event_count",
+        "first_observed_at",
+        "last_observed_at",
+        "assigned_to",
+        "updated_at",
+    },
 }
 
 
@@ -309,11 +322,15 @@ def test_runtime_role_column_updates_are_exactly_as_documented(attacker_sql):
     assert actual == EXPECTED_COLUMN_UPDATES
 
 
-def test_only_the_slug_resolver_is_security_definer(attacker_sql):
+def test_only_the_id_lookups_are_security_definer(attacker_sql):
+    """Each exception to RLS is deliberate, returns IDs only, and is listed here."""
     rows = attacker_sql.execute(
         """
         SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.prosecdef
         """
     ).fetchall()
-    assert [row[0] for row in rows] == ["aegis_resolve_tenant"]
+    assert sorted(row[0] for row in rows) == [
+        "aegis_resolve_tenant",
+        "aegis_tenants_with_pending_events",
+    ]

@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from aegis.canonical import canonical_json
+from aegis.correlation.rules import CorrelationRule
 from aegis.policy.schema import PolicyDocument
 
 MAX_PARAMS_CHARS = 16_384
@@ -14,6 +15,7 @@ Classification = Literal["public", "internal", "sensitive"]
 ResourceKind = Literal["document", "customer_record", "destination"]
 ApprovalStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "CANCELLED"]
 Outcome = Literal["ALLOW", "DENY", "REQUIRE_APPROVAL"]
+IncidentStatus = Literal["OPEN", "ACKNOWLEDGED", "INVESTIGATING", "RESOLVED", "CLOSED"]
 
 
 class In(BaseModel):
@@ -292,6 +294,62 @@ class SecurityEventOut(Out):
     attributes: dict[str, Any]
     source_audit_event_id: UUID
     source_event_hash: str
+    incident_ids: list[UUID] = []
+
+
+class IncidentTransitionIn(In):
+    expected_version: Annotated[int, Field(strict=True, ge=1)]
+    reason: Annotated[str, StringConstraints(strict=True, max_length=2000)] | None = None
+
+
+class IncidentTransitionOut(Out):
+    id: UUID
+    from_status: str | None
+    to_status: str
+    actor_type: str
+    actor_id: UUID | None
+    reason: str | None
+    occurred_at: datetime
+    audit_event_id: UUID
+
+
+class IncidentOut(Out):
+    id: UUID
+    rule_version_id: UUID
+    rule_key: str
+    rule_version: int
+    scope_type: str
+    scope_key: str
+    agent_id: UUID | None
+    agent_name: str | None
+    title: str
+    severity: str
+    status: str
+    version: int
+    event_count: int
+    first_observed_at: datetime
+    last_observed_at: datetime
+    assigned_to: UUID | None
+    assigned_to_email: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IncidentDetailOut(IncidentOut):
+    transitions: list[IncidentTransitionOut]
+    rule_definition: dict[str, Any]
+
+
+class RuleVersionIn(In):
+    definition: CorrelationRule
+
+
+class CorrelationRuleOut(Out):
+    rule_key: str
+    version: int
+    version_id: UUID
+    content_hash: str
+    definition: dict[str, Any]
 
 
 class AuditHeadOut(Out):
@@ -318,6 +376,8 @@ class OverviewOut(Out):
     audit_events: int
     active_policy_version_id: UUID | None
     synthetic_assets: int
+    active_incidents: int
+    pending_correlation: int
 
 
 class Page[T](BaseModel):

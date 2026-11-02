@@ -1,22 +1,37 @@
 """Security events are read-only over HTTP. They originate only in trusted backend code."""
 
-from typing import Annotated
+from collections.abc import Sequence
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from aegis.api.dependencies import ContainerDep, LimitQuery, OffsetQuery, UserDep
 from aegis.api.schemas import Page, SecurityEventOut
-from aegis.db.models import Agent, SecurityEvent
+from aegis.db.models import Agent, IncidentEvent, SecurityEvent
 from aegis.errors import NotFound
 from aegis.events.schema import EventType, Severity
 
 router = APIRouter()
 
 
-def _event_out(event: SecurityEvent, agent_name: str | None) -> SecurityEventOut:
-    return SecurityEventOut.model_validate(event).model_copy(update={"agent_name": agent_name})
+def events_out(session: Session, rows: Sequence[Any]) -> list[SecurityEventOut]:
+    """Rows of (event, agent name), with the incidents each event belongs to."""
+    links: dict[UUID, list[UUID]] = {}
+    for event_id, incident_id in session.execute(
+        select(IncidentEvent.event_id, IncidentEvent.incident_id).where(
+            IncidentEvent.event_id.in_([row[0].id for row in rows])
+        )
+    ).all():
+        links.setdefault(event_id, []).append(incident_id)
+    return [
+        SecurityEventOut.model_validate(event).model_copy(
+            update={"agent_name": agent_name, "incident_ids": links.get(event.id, [])}
+        )
+        for event, agent_name in rows
+    ]
 
 
 @router.get("/events", response_model=Page[SecurityEventOut])
@@ -49,7 +64,7 @@ def events_list(
             select(func.count()).select_from(SecurityEvent).where(*conditions)
         ).scalar_one()
         return Page[SecurityEventOut](
-            items=[_event_out(*row) for row in rows], total=total, limit=limit, offset=offset
+            items=events_out(session, rows), total=total, limit=limit, offset=offset
         )
 
 
@@ -63,4 +78,4 @@ def events_get(event_id: UUID, user: UserDep, container: ContainerDep):
         ).one_or_none()
         if row is None:
             raise NotFound()
-        return _event_out(*row)
+        return events_out(session, [row])[0]
