@@ -25,6 +25,7 @@ from aegis.db.models import (
     AgentResourceGrant,
     AgentToolGrant,
     Approval,
+    AuditEvent,
     Execution,
     PolicyDecision,
     PolicyVersion,
@@ -309,10 +310,12 @@ def _run_claim(
 
 
 def _load_result(session: Session, request: ActionRequest) -> ActionResult:
+    # Timestamps can tie, so the audit chain sequence identifies the latest decision.
     decision = session.execute(
         select(PolicyDecision)
+        .join(AuditEvent, AuditEvent.subject_id == PolicyDecision.id)
         .where(PolicyDecision.request_id == request.id)
-        .order_by(PolicyDecision.evaluated_at.desc())
+        .order_by(AuditEvent.seq.desc())
         .limit(1)
     ).scalar_one()
     approval = session.execute(

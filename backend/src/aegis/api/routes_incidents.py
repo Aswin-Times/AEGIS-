@@ -28,6 +28,7 @@ from aegis.api.schemas import (
 from aegis.correlation.store import create_rule_version, load_rules, parse_version
 from aegis.db.models import (
     Agent,
+    AuditEvent,
     CorrelationRuleVersion,
     Incident,
     IncidentEvent,
@@ -86,20 +87,17 @@ def _detail(session: Session, incident_id: UUID) -> IncidentDetailOut:
     if row is None:
         raise NotFound()
     incident = row[0]
+    # Timestamps can tie, so the audit chain sequence gives the true order.
     transitions = session.execute(
         select(IncidentTransition)
+        .join(AuditEvent, AuditEvent.id == IncidentTransition.audit_event_id)
         .where(IncidentTransition.incident_id == incident_id)
-        .order_by(IncidentTransition.occurred_at, IncidentTransition.id)
+        .order_by(AuditEvent.seq)
     ).scalars()
     version = session.get(CorrelationRuleVersion, incident.rule_version_id)
-    ordered = sorted(
-        (IncidentTransitionOut.model_validate(item) for item in transitions),
-        # A new incident's transitions can share a timestamp, so the chain position breaks the tie.
-        key=lambda item: (item.occurred_at, item.from_status is not None),
-    )
     return IncidentDetailOut(
         **_incident_fields(*row),
-        transitions=ordered,
+        transitions=[IncidentTransitionOut.model_validate(item) for item in transitions],
         rule_definition=parse_version(version).model_dump(mode="json", exclude_none=True),
     )
 
@@ -161,7 +159,7 @@ def incidents_events(
             .join(IncidentEvent, IncidentEvent.event_id == SecurityEvent.id)
             .outerjoin(Agent, Agent.id == SecurityEvent.agent_id)
             .where(IncidentEvent.incident_id == incident_id)
-            .order_by(SecurityEvent.occurred_at, SecurityEvent.id)
+            .order_by(SecurityEvent.occurred_at, SecurityEvent.recorded_at, SecurityEvent.id)
             .limit(limit)
             .offset(offset)
         ).all()

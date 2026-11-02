@@ -56,7 +56,11 @@ def events_list(
             select(SecurityEvent, Agent.name)
             .outerjoin(Agent, Agent.id == SecurityEvent.agent_id)
             .where(*conditions)
-            .order_by(SecurityEvent.occurred_at.desc(), SecurityEvent.id)
+            .order_by(
+                SecurityEvent.occurred_at.desc(),
+                SecurityEvent.recorded_at.desc(),
+                SecurityEvent.id,
+            )
             .limit(limit)
             .offset(offset)
         ).all()
