@@ -1,0 +1,51 @@
+[project]
+name = "aegis"
+version = "0.1.0"
+description = "AEGIS: AI Security, Governance & Control Platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "pydantic>=2.8,<3",
+    "pydantic-settings>=2.4,<3",
+    "sqlalchemy>=2.0.30,<3",
+    "alembic>=1.13,<2",
+    "psycopg[binary]>=3.2,<4",
+    "argon2-cffi>=23.1",
+    "pyjwt[crypto]>=2.9,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "httpx>=0.27,<1",
+    "hypothesis>=6.100,<7",
+    "ruff>=0.6",
+    "pgserver==0.1.4",
+]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "UP"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S608"]
+"src/aegis/db/bootstrap.py" = ["S608"]
+"migrations/**" = ["S608"]
+"scripts/**" = ["S603", "S105", "S106"]
