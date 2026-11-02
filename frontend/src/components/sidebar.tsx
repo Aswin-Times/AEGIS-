@@ -6,8 +6,10 @@ import {
   Boxes,
   ClipboardCheck,
   FileLock2,
+  Gavel,
   LayoutDashboard,
   ScrollText,
+  Siren,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -17,7 +19,9 @@ const ITEMS = [
   { href: "/assets", label: "AI Assets", icon: Boxes },
   { href: "/agents", label: "Agent Registry", icon: Bot },
   { href: "/policies", label: "Policies", icon: FileLock2 },
+  { href: "/incidents", label: "Incidents", icon: Siren },
   { href: "/events", label: "Security Events", icon: Activity },
+  { href: "/decisions", label: "Policy Decisions", icon: Gavel },
   { href: "/approvals", label: "Approval Queue", icon: ClipboardCheck },
   { href: "/audit", label: "Audit Records", icon: ScrollText },
 ];

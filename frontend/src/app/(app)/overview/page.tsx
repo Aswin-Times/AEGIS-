@@ -31,23 +31,31 @@ export default async function OverviewPage() {
         title="Overview"
         description={`Every number is a count of stored records. ${synthetic}`}
       />
-      <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
+      <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-5 xl:grid-cols-9">
+        <Stat label="Active incidents" value={overview.active_incidents} href="/incidents" />
         <Stat label="AI assets" value={overview.assets} href="/assets" />
         <Stat label="Agents" value={overview.agents} href="/agents" />
         <Stat label="Disabled agents" value={overview.agents_disabled} href="/agents" />
-        <Stat label="Allowed" value={overview.decisions.ALLOW} href="/events?outcome=ALLOW" />
-        <Stat label="Denied" value={overview.decisions.DENY} href="/events?outcome=DENY" />
+        <Stat label="Allowed" value={overview.decisions.ALLOW} href="/decisions?outcome=ALLOW" />
+        <Stat label="Denied" value={overview.decisions.DENY} href="/decisions?outcome=DENY" />
         <Stat
           label="Pending approvals"
           value={overview.pending_approvals}
           href="/approvals?status=PENDING"
         />
-        <Stat label="Tool executions" value={overview.executions} href="/events" />
+        <Stat label="Tool executions" value={overview.executions} href="/decisions" />
         <Stat label="Audit events" value={overview.audit_events} href="/audit" />
       </div>
       {overview.active_policy_version_id === null && (
         <p role="alert" className="mb-4 rounded-md bg-deny-bg p-3 text-deny">
           No policy is active, so every protected action is being denied.
+        </p>
+      )}
+      {overview.pending_correlation > 0 && (
+        <p className="mb-4 rounded-md bg-hold-bg p-3 text-hold">
+          {overview.pending_correlation} security events are waiting for correlation. Incidents may
+          not yet reflect them. If this number does not fall, correlation has stopped, and the API
+          logs say why.
         </p>
       )}
       <Panel title="Recent decisions">
@@ -67,7 +75,7 @@ export default async function OverviewPage() {
                   <StatusBadge value={decision.outcome} />
                 </Cell>
                 <Cell>
-                  <Link className="underline" href={`/events/${decision.id}`}>
+                  <Link className="underline" href={`/decisions/${decision.id}`}>
                     {humanize(decision.reason_code)}
                   </Link>
                 </Cell>

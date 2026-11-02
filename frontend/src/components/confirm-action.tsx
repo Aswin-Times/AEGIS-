@@ -30,6 +30,7 @@ export function ConfirmAction({
   danger,
   action,
   fields,
+  extra,
 }: {
   trigger: string;
   triggerLabel: string;
@@ -39,6 +40,7 @@ export function ConfirmAction({
   danger?: boolean;
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
   fields: Record<string, string>;
+  extra?: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -71,6 +73,7 @@ export function ConfirmAction({
           {Object.entries(fields).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
+          {extra}
           {state.error && (
             <p role="alert" className="mb-2 text-sm text-deny">
               {state.error}

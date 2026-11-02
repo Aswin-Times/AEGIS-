@@ -10,79 +10,106 @@ import {
   Table,
 } from "@/components/ui";
 import { api, query } from "@/lib/api";
-import { formatTime, humanize, pageOffset } from "@/lib/format";
-import type { Decision, Page } from "@/lib/types";
+import { formatTime, pageOffset, shortId } from "@/lib/format";
+import type { Page, SecurityEvent } from "@/lib/types";
 
 export const metadata = { title: "Security Events | AEGIS" };
 
-const OUTCOMES = ["ALLOW", "DENY", "REQUIRE_APPROVAL"];
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];
+const UUID = /^[0-9a-f-]{36}$/i;
 
 export default async function EventsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ outcome?: string; offset?: string }>;
+  searchParams: Promise<{ severity?: string; agent_id?: string; offset?: string }>;
 }) {
-  const { outcome: rawOutcome, offset } = await searchParams;
-  const outcome = rawOutcome && OUTCOMES.includes(rawOutcome) ? rawOutcome : undefined;
-  const page = await api<Page<Decision>>(
-    `/decisions${query({ outcome, offset: pageOffset(offset) })}`,
+  const { severity: rawSeverity, agent_id: rawAgent, offset } = await searchParams;
+  const severity = rawSeverity && SEVERITIES.includes(rawSeverity) ? rawSeverity : undefined;
+  const agentId = rawAgent && UUID.test(rawAgent) ? rawAgent : undefined;
+  const page = await api<Page<SecurityEvent>>(
+    `/events${query({ severity, agent_id: agentId, offset: pageOffset(offset) })}`,
   );
+
   return (
     <>
       <PageHeader
         title="Security Events"
-        description="Each policy decision made at the gateway, and whether a tool actually ran."
+        description="Security-relevant activity recorded by AEGIS itself. Events never hold parameters, message bodies, or tool results, and there is no way to submit one."
       />
       <FilterLinks
         basePath="/events"
-        name="outcome"
-        current={outcome}
+        name="severity"
+        current={severity}
         options={[
           { value: undefined, label: "All" },
-          { value: "DENY", label: "Denied" },
-          { value: "ALLOW", label: "Allowed" },
-          { value: "REQUIRE_APPROVAL", label: "Held for approval" },
+          ...SEVERITIES.map((value) => ({
+            value,
+            label: value.charAt(0).toUpperCase() + value.slice(1),
+          })),
         ]}
       />
       <Panel>
         {page.items.length === 0 ? (
           <EmptyState
-            title="No matching decisions"
-            detail="Decisions appear here when an agent submits an action to the gateway."
+            title="No matching events"
+            detail="Events appear here as agents and people use AEGIS."
           />
         ) : (
           <Table
-            head={["Time", "Agent", "Tool", "Outcome", "Reason", "Policy", "Execution", "Evidence"]}
+            head={[
+              "Time",
+              "Event",
+              "Severity",
+              "Reason",
+              "Agent",
+              "Tool and action",
+              "Decision",
+              "Incident",
+            ]}
           >
-            {page.items.map((decision) => (
-              <tr key={decision.id}>
-                <Cell mono>{formatTime(decision.evaluated_at)}</Cell>
-                <Cell>{decision.agent_name}</Cell>
-                <Cell mono>{decision.tool}</Cell>
-                <Cell>
-                  <StatusBadge value={decision.outcome} />
-                </Cell>
-                <Cell>{humanize(decision.reason_code)}</Cell>
-                <Cell>
-                  {decision.policy_version === null ? "None" : `v${decision.policy_version}`}
+            {page.items.map((event) => (
+              <tr key={event.id}>
+                <Cell mono>{formatTime(event.occurred_at)}</Cell>
+                <Cell mono>
+                  <Link className="underline" href={`/evidence/security_event/${event.id}`}>
+                    {event.event_type}
+                  </Link>
                 </Cell>
                 <Cell>
-                  {decision.execution ? (
-                    <StatusBadge value={decision.execution.status} />
+                  <StatusBadge value={event.severity} />
+                </Cell>
+                <Cell mono>{event.reason_code}</Cell>
+                <Cell>{event.agent_name ?? <span className="text-muted">None</span>}</Cell>
+                <Cell mono>
+                  {event.tool ? `${event.tool}${event.action ? ` (${event.action})` : ""}` : "None"}
+                </Cell>
+                <Cell mono>
+                  {event.decision_id ? (
+                    <Link className="underline" href={`/decisions/${event.decision_id}`}>
+                      {shortId(event.decision_id)}
+                    </Link>
                   ) : (
-                    <span className="text-muted">Tool did not run</span>
+                    "None"
                   )}
                 </Cell>
-                <Cell>
-                  <Link className="underline" href={`/events/${decision.id}`}>
-                    View
-                  </Link>
+                <Cell mono>
+                  {event.incident_ids.length > 0
+                    ? event.incident_ids.map((id) => (
+                        <Link key={id} className="mr-1 underline" href={`/incidents/${id}`}>
+                          {shortId(id)}
+                        </Link>
+                      ))
+                    : "None"}
                 </Cell>
               </tr>
             ))}
           </Table>
         )}
-        <Pagination basePath="/events" {...page} params={{ outcome }} />
+        <Pagination
+          basePath="/events"
+          {...page}
+          params={{ severity, agent_id: agentId }}
+        />
       </Panel>
     </>
   );

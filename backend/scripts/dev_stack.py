@@ -62,6 +62,18 @@ def _wait_until_healthy(url: str) -> None:
     raise RuntimeError("The API did not become healthy")
 
 
+def _start_embedded_postgres(pgserver):
+    """After an unclean stop, recovery can outlast pgserver's short start timeout, so retry."""
+    for attempt in range(6):
+        try:
+            return pgserver.get_server(DEV / "pgdata", cleanup_mode="stop")
+        except Exception:
+            if attempt == 5:
+                raise
+            time.sleep(10)
+    raise AssertionError("unreachable")
+
+
 def main() -> int:
     DEV.mkdir(exist_ok=True)
     passwords = _load_or_create_passwords()
@@ -70,7 +82,7 @@ def main() -> int:
     if admin_url is None:
         import pgserver
 
-        server = pgserver.get_server(DEV / "pgdata", cleanup_mode="stop")
+        server = _start_embedded_postgres(pgserver)
         admin_url = server.get_uri()
     owner_url, app_url = ensure_roles_and_database(
         admin_url,

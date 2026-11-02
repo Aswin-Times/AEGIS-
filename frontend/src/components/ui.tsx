@@ -6,6 +6,7 @@ import {
   Clock,
   FlaskConical,
   type LucideIcon,
+  Search,
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
@@ -34,6 +35,12 @@ const STATUS: Record<string, { tone: Tone; icon: LucideIcon; label: string }> = 
   FAILED: { tone: "deny", icon: XCircle, label: "Failed" },
   active: { tone: "allow", icon: CheckCircle2, label: "Active" },
   disabled: { tone: "deny", icon: Ban, label: "Disabled" },
+  OPEN: { tone: "deny", icon: AlertTriangle, label: "Open" },
+  ACKNOWLEDGED: { tone: "hold", icon: Clock, label: "Acknowledged" },
+  INVESTIGATING: { tone: "hold", icon: Search, label: "Investigating" },
+  RESOLVED: { tone: "allow", icon: CheckCircle2, label: "Resolved" },
+  CLOSED: { tone: "neutral", icon: CheckCircle2, label: "Closed" },
+  info: { tone: "neutral", icon: Circle, label: "Info" },
   low: { tone: "neutral", icon: Circle, label: "Low" },
   medium: { tone: "hold", icon: AlertTriangle, label: "Medium" },
   high: { tone: "deny", icon: AlertTriangle, label: "High" },
@@ -88,7 +95,7 @@ export function PageHeader({
 
 export function Panel({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <section className="rounded-md border border-line bg-surface">
+    <section aria-label={title} className="rounded-md border border-line bg-surface">
       {title && (
         <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">{title}</h2>
       )}

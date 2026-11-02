@@ -124,10 +124,10 @@ test("a denied action shows evidence that the tool did not run", async ({ page }
   expect(denied.execution).toBeNull();
 
   await signIn(page, "viewer");
-  await page.goto("/events?outcome=DENY");
+  await page.goto("/decisions?outcome=DENY");
   await expect(page.getByRole("cell", { name: "Tool did not run" }).first()).toBeVisible();
 
-  await page.goto(`/events/${denied.decision_id}`);
+  await page.goto(`/decisions/${denied.decision_id}`);
   await expect(page.getByText("The tool did not run. No execution record exists")).toBeVisible();
   await expect(page.getByText("TOOL_NOT_GRANTED")).toBeVisible();
   await expect(page.getByText(denied.request_id)).toBeVisible();
@@ -161,7 +161,7 @@ test("a held action runs only after a reviewer approves it, and only once", asyn
 
   await page.goto("/events");
   await expect(page.getByRole("heading", { name: "Security Events" })).toBeVisible();
-  await page.goto(`/events/${held.decision_id}`);
+  await page.goto(`/decisions/${held.decision_id}`);
   await expect(page.getByText("An execution record exists for this request")).toBeVisible();
 });
 
@@ -276,7 +276,16 @@ test("assets are labeled synthetic", async ({ page }) => {
 test("the layout works at phone width with no horizontal page scroll", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await signIn(page, "viewer");
-  for (const path of ["/overview", "/events", "/approvals", "/audit", "/agents", "/policies"]) {
+  for (const path of [
+    "/overview",
+    "/incidents",
+    "/events",
+    "/decisions",
+    "/approvals",
+    "/audit",
+    "/agents",
+    "/policies",
+  ]) {
     await page.goto(path);
     await expect(page.locator("main").first()).toBeVisible();
     const overflow = await page.evaluate(

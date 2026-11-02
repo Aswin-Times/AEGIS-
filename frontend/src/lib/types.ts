@@ -12,6 +12,8 @@ export type Overview = {
   executions: number;
   audit_events: number;
   active_policy_version_id: string | null;
+  active_incidents: number;
+  pending_correlation: number;
 };
 
 export type Asset = {
@@ -134,4 +136,99 @@ export type AuditVerification = {
   head_hash: string;
   failure_seq: number | null;
   failure_reason: string | null;
+};
+
+export type SecurityEvent = {
+  id: string;
+  event_type: string;
+  occurred_at: string;
+  recorded_at: string;
+  actor_type: string;
+  actor_id: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  tool: string | null;
+  action: string | null;
+  resource_id: string | null;
+  decision_id: string | null;
+  approval_id: string | null;
+  execution_id: string | null;
+  severity: string;
+  reason_code: string;
+  incident_ids: string[];
+};
+
+export type IncidentTransition = {
+  id: string;
+  from_status: string | null;
+  to_status: string;
+  actor_type: string;
+  actor_id: string | null;
+  reason: string | null;
+  occurred_at: string;
+  audit_event_id: string;
+};
+
+export type Incident = {
+  id: string;
+  rule_key: string;
+  rule_version: number;
+  scope_type: string;
+  scope_key: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  title: string;
+  severity: string;
+  status: string;
+  version: number;
+  event_count: number;
+  first_observed_at: string;
+  last_observed_at: string;
+  assigned_to: string | null;
+  assigned_to_email: string | null;
+};
+
+export type IncidentDetail = Incident & {
+  transitions: IncidentTransition[];
+  rule_definition: Record<string, unknown> | null;
+};
+
+export type EvidenceRef = { type: string; id: string };
+
+export type TimelineItem = {
+  occurred_at: string;
+  kind: string;
+  summary: string;
+  severity: string | null;
+  verified: boolean | null;
+  evidence: EvidenceRef;
+};
+
+export type InvestigationRun = {
+  id: string;
+  input_fingerprint: string;
+  llm_status: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  llm_rejected_count: number;
+  created_at: string;
+};
+
+export type Finding = {
+  id: string;
+  kind: string;
+  source: string;
+  statement: string;
+  confidence: string | null;
+  verified: boolean;
+  evidence: EvidenceRef[];
+};
+
+export type Findings = { run: InvestigationRun | null; findings: Finding[] };
+
+export type EvidenceRecord = {
+  type: string;
+  id: string;
+  occurred_at: string;
+  fields: Record<string, unknown>;
 };

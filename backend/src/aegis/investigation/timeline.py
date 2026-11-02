@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from aegis.db.models import AuditEvent
 from aegis.investigation.evidence import CollectedEvidence
 
 # Records can share a timestamp. This keeps cause before effect within the same instant.
@@ -18,6 +19,18 @@ class TimelineItem:
     verified: bool | None
     evidence_type: str
     evidence_id: str
+
+
+def _audit_summary(audit: AuditEvent) -> str:
+    if audit.event_type == "incident.created":
+        rule = audit.payload.get("rule_key")
+        version = audit.payload.get("rule_version")
+        return f"Created by {rule} version {version}"
+    if audit.event_type == "incident.status_changed":
+        return f"{audit.payload.get('from_status')} to {audit.payload.get('to_status')}"
+    if audit.event_type == "incident.event_linked":
+        return "Another matching event was linked"
+    return "Recorded in the audit log"
 
 
 def build_timeline(evidence: CollectedEvidence) -> list[TimelineItem]:
@@ -62,7 +75,7 @@ def build_timeline(evidence: CollectedEvidence) -> list[TimelineItem]:
                 "execution", execution.id)
     for audit in evidence.audit_events:
         if audit.subject_type == "incident":
-            add(audit.occurred_at, audit.event_type, audit.event_type, "audit_event", audit.id)
+            add(audit.occurred_at, audit.event_type, _audit_summary(audit), "audit_event", audit.id)
 
     return sorted(
         items,
