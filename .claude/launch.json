@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aegis-api",
+      "runtimeExecutable": "backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["backend/scripts/dev_stack.py"],
+      "port": 8000
+    },
+    {
+      "name": "aegis-dashboard",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "aegis-dashboard-production",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["--prefix", "frontend", "run", "start", "--", "--hostname", "127.0.0.1", "--port", "3000"],
+      "port": 3000
+    }
+  ]
+}

@@ -248,3 +248,70 @@ def test_api_refuses_to_start_with_a_privileged_database_role(urls, attr):
 
 def test_api_starts_with_the_restricted_role(db):
     assert_runtime_role_is_restricted(db)
+
+
+EXPECTED_TABLE_PRIVILEGES = {
+    "tenants": {"SELECT"},
+    "users": {"SELECT"},
+    "ai_assets": {"SELECT", "INSERT"},
+    "agents": {"SELECT", "INSERT"},
+    "agent_credentials": {"SELECT", "INSERT"},
+    "resources": {"SELECT", "INSERT"},
+    "agent_tool_grants": {"SELECT", "INSERT", "DELETE"},
+    "agent_resource_grants": {"SELECT", "INSERT", "DELETE"},
+    "policies": {"SELECT", "INSERT"},
+    "policy_versions": {"SELECT", "INSERT"},
+    "action_requests": {"SELECT", "INSERT"},
+    "policy_decisions": {"SELECT", "INSERT"},
+    "approvals": {"SELECT", "INSERT"},
+    "executions": {"SELECT", "INSERT"},
+    "simulated_outbox": {"SELECT", "INSERT"},
+    "audit_chain_heads": {"SELECT"},
+    "audit_events": {"SELECT", "INSERT"},
+}
+
+EXPECTED_COLUMN_UPDATES = {
+    "tenants": {"active_policy_version_id"},
+    "agents": {"status"},
+    "agent_credentials": {"revoked_at"},
+    "approvals": {"status", "decided_by", "decided_at", "comment"},
+    "executions": {"status", "result", "finished_at"},
+    "audit_chain_heads": {"seq", "head_hash"},
+}
+
+
+def test_runtime_role_table_privileges_are_exactly_as_documented(attacker_sql):
+    """Checked in the catalog, because triggers would otherwise hide an excessive grant."""
+    rows = attacker_sql.execute(
+        """
+        SELECT table_name, privilege_type FROM information_schema.role_table_grants
+        WHERE grantee = 'aegis_app' AND table_schema = 'public'
+        """
+    ).fetchall()
+    actual = {}
+    for table, privilege in rows:
+        actual.setdefault(table, set()).add(privilege)
+    assert actual == EXPECTED_TABLE_PRIVILEGES
+
+
+def test_runtime_role_column_updates_are_exactly_as_documented(attacker_sql):
+    rows = attacker_sql.execute(
+        """
+        SELECT table_name, column_name FROM information_schema.column_privileges
+        WHERE grantee = 'aegis_app' AND table_schema = 'public' AND privilege_type = 'UPDATE'
+        """
+    ).fetchall()
+    actual = {}
+    for table, column in rows:
+        actual.setdefault(table, set()).add(column)
+    assert actual == EXPECTED_COLUMN_UPDATES
+
+
+def test_only_the_slug_resolver_is_security_definer(attacker_sql):
+    rows = attacker_sql.execute(
+        """
+        SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.prosecdef
+        """
+    ).fetchall()
+    assert [row[0] for row in rows] == ["aegis_resolve_tenant"]

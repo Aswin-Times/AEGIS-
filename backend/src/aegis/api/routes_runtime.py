@@ -7,7 +7,6 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from aegis.api.dependencies import (
-    AdminDep,
     AgentDep,
     ContainerDep,
     LimitQuery,

@@ -21,3 +21,10 @@ next-env.d.ts
 .pgdata/
 *.pem
 *.key
+
+# Local development state
+backend/.dev/
+
+# Playwright output
+frontend/test-results/
+frontend/playwright-report/

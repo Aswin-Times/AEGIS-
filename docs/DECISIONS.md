@@ -85,5 +85,21 @@ label in the MVP, not a user reference, so the rule could not be enforced honest
 **Revisit:** When owners become user references.
 
 ## D-015: Development on `main` for the initial build
-**Decision:** The repository starts empty, so milestone commits go directly to `main` as
-the project owner requested. **Revisit:** Move to pull requests once CI exists on GitHub.
+**Decision:** The repository starts empty, and the project owner asked for work to be pushed
+after each step, so milestone commits go directly to `main`. **Revisit:** Move to pull requests
+once CI is running on GitHub.
+
+## D-016: Column-level update grants for the runtime role
+**Decision:** The runtime role may update only named columns. **Why:** The approval trigger
+protects binding columns, but a grant that never existed cannot be misused, and a test can
+compare the grants against the live catalog. **Cost:** A migration is needed whenever a new
+column must become updatable.
+
+## D-017: Unbuilt views are absent, not stubbed
+**Decision:** The dashboard has no Incidents or Governance pages until those features exist.
+**Why:** An empty page would imply a capability the system does not have. Security Events
+currently shows policy decisions, the only event source that exists.
+
+## D-018: Playwright with the installed browser
+**Decision:** End-to-end tests use `channel: msedge` locally. **Why:** It needs no browser
+download, and it works without a visible window. **Cost:** Results come from one browser engine.

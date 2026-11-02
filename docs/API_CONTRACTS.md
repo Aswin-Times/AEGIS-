@@ -22,7 +22,9 @@ Every error has this shape. Stack traces and internal details are never returned
 | 401 | Not authenticated | `UNAUTHENTICATED` |
 | 403 | Authenticated but not permitted | `FORBIDDEN` |
 | 404 | Not found, or belongs to another tenant (indistinguishable) | `NOT_FOUND` |
-| 409 | State conflict | `INVALID_STATE_TRANSITION`, `IDEMPOTENCY_CONFLICT`, `APPROVAL_NOT_EXECUTABLE`, `ALREADY_EXISTS` |
+| 409 | State conflict | `INVALID_STATE_TRANSITION`, `IDEMPOTENCY_CONFLICT`, `APPROVAL_NOT_EXECUTABLE`, `APPROVAL_EXPIRED`, `ALREADY_EXISTS` |
+| 411 | Chunked body refused, so that size can be checked up front | `LENGTH_REQUIRED` |
+| 413 | Body over 64 KiB | `PAYLOAD_TOO_LARGE` |
 | 422 | Validation failure | `VALIDATION_ERROR` |
 | 503 | Fail-closed dependency failure | `SERVICE_UNAVAILABLE` |
 
@@ -46,6 +48,7 @@ Collections accept `limit` (1 to 100, default 50) and `offset`, and return
 | Method, path | Role | Notes |
 |--------------|------|-------|
 | `GET /assets` | Any | Paginated |
+| `GET /assets/{asset_id}` | Any | |
 | `POST /assets` | admin | `name`, `owner`, `risk_classification` (`low`, `medium`, `high`, `critical`), `intended_use`, `is_synthetic` |
 
 ## Agents (user)
@@ -57,7 +60,7 @@ Collections accept `limit` (1 to 100, default 50) and `offset`, and return
 | `POST /agents` | admin | `asset_id`, `name`, `owner` |
 | `POST /agents/{id}/status` | admin | `status`: `active` or `disabled`. Audited |
 | `POST /agents/{id}/credentials` | admin | Returns the key **once** |
-| `POST /agents/{id}/credentials/{cid}/revoke` | admin | Audited |
+| `POST /agents/{id}/credentials/{cid}/revoke` | admin | Audited, and effective on the next request |
 | `POST /agents/{id}/tool-grants` | admin | `tool` must be in the catalog. Audited |
 | `DELETE /agents/{id}/tool-grants/{tool}` | admin | Audited |
 | `POST /agents/{id}/resource-grants` | admin | `resource_id`. Audited |
@@ -95,7 +98,7 @@ Collections accept `limit` (1 to 100, default 50) and `offset`, and return
 ```
 
 - `effect`: `allow`, `deny`, or `require_approval`.
-- `match` fields are optional and combine with AND: `tools`, `actions`, `resource_classifications`, `resource_kinds`.
+- `match` fields are optional and combine with AND: `tools`, `actions`, `resource_classifications`, `resource_kinds`, `attachment_classifications`.
 - Precedence: any deny, then any require_approval, then any allow. No match is a deny.
 - Maximum 200 rules.
 
@@ -118,6 +121,7 @@ Result (200 in all policy outcomes):
   "decision_id": "uuid",
   "policy_version_id": "uuid-or-null",
   "approval_id": "uuid-or-null",
+  "approval_status": "PENDING | APPROVED | REJECTED | EXECUTED | CANCELLED | null",
   "execution": { "status": "SUCCEEDED | FAILED", "result": {} }
 }
 ```
@@ -150,7 +154,7 @@ a re-evaluation that is not a deny. Otherwise 409, and the action is not execute
 
 `ALLOWED_BY_RULE`, `DENIED_BY_RULE`, `APPROVAL_REQUIRED_BY_RULE` (or a rule's custom code),
 `AGENT_DISABLED`, `UNKNOWN_TOOL`, `TOOL_NOT_GRANTED`, `INVALID_PARAMETERS`, `RESOURCE_REQUIRED`,
-`RESOURCE_NOT_FOUND`, `RESOURCE_KIND_MISMATCH`, `RESOURCE_NOT_GRANTED`,
+`RESOURCE_NOT_EXPECTED`, `RESOURCE_NOT_FOUND`, `RESOURCE_KIND_MISMATCH`, `RESOURCE_NOT_GRANTED`,
 `ATTACHMENT_NOT_GRANTED`, `DESTINATION_CLEARANCE_INSUFFICIENT`, `NO_ACTIVE_POLICY`,
 `POLICY_INVALID`, `NO_MATCHING_RULE`, `POLICY_EVALUATION_ERROR`.
 

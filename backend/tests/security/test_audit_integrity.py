@@ -1,6 +1,8 @@
 """Audit integrity: attempted modification, and detection of tampering that succeeds."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC
 from uuid import uuid4
 
 import psycopg
@@ -9,6 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from aegis.audit.chain import GENESIS_HASH, append_event, verify_chain
+from aegis.canonical import canonical_hash
 
 
 def _chain(db, tenant, count=3):
@@ -148,6 +151,48 @@ def test_reordered_events_fail_verification(db, new_tenant, attacker_sql):
     assert result.failure_seq == 2
 
 
+def test_recomputing_one_events_hash_breaks_the_link_to_the_next(db, new_tenant, attacker_sql):
+    """An attacker who fixes the edited event's own hash is caught by the next event's link."""
+    tenant = new_tenant()
+    _chain(db, tenant)
+    row = attacker_sql.execute(
+        """
+        SELECT id, seq, prev_hash, event_type, actor_type, subject_type, subject_id, occurred_at
+        FROM audit_events WHERE tenant_id = %s AND seq = 2
+        """,
+        (tenant,),
+    ).fetchone()
+    forged_payload = {"number": 99}
+    forged_hash = canonical_hash(
+        {
+            "id": str(row[0]),
+            "tenant_id": str(tenant),
+            "seq": row[1],
+            "prev_hash": row[2],
+            "event_type": row[3],
+            "actor_type": row[4],
+            "actor_id": None,
+            "correlation_id": None,
+            "subject_type": row[5],
+            "subject_id": None if row[6] is None else str(row[6]),
+            "policy_version_id": None,
+            "occurred_at": row[7].astimezone(UTC).isoformat(),
+            "payload": forged_payload,
+        }
+    )
+    _as_attacker(
+        attacker_sql,
+        [("UPDATE audit_events SET payload = %s, event_hash = %s WHERE id = %s",
+          (json.dumps(forged_payload), forged_hash, row[0]))],
+    )
+
+    result = _verify(db, tenant)
+
+    assert not result.valid
+    assert result.failure_seq == 3
+    assert result.failure_reason == "BROKEN_LINK"
+
+
 def test_tampered_head_fails_verification(db, new_tenant, attacker_sql):
     tenant = new_tenant()
     _chain(db, tenant)
@@ -162,10 +207,6 @@ def test_documented_limitation_full_chain_rewrite_is_not_detected(db, new_tenant
 
     If this ever fails, the guarantee got stronger, and the docs should be updated.
     """
-    import json
-
-    from aegis.canonical import canonical_hash
-
     tenant = new_tenant()
     _chain(db, tenant, count=1)
     rows = attacker_sql.execute(
@@ -194,7 +235,7 @@ def test_documented_limitation_full_chain_rewrite_is_not_detected(db, new_tenant
                 "subject_type": row[7],
                 "subject_id": None if row[8] is None else str(row[8]),
                 "policy_version_id": None,
-                "occurred_at": row[10].astimezone(__import__("datetime").UTC).isoformat(),
+                "occurred_at": row[10].astimezone(UTC).isoformat(),
                 "payload": payload,
             }
         )

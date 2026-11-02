@@ -18,6 +18,7 @@ tenants 1--* users
                                   1--* agent_tool_grants
                                   1--* agent_resource_grants *--1 resources
         1--* policies 1--* policy_versions
+        1--0..1 active policy version
         1--* action_requests *--1 agents
                  1--* policy_decisions *--1 policy_versions (nullable)
                  1--0..1 approvals
@@ -31,7 +32,7 @@ tenants 1--* users
 
 | Table | Key columns | Notes |
 |-------|-------------|-------|
-| `tenants` | `id`, `slug` unique, `name`, `active_policy_id` | RLS: `id = aegis_current_tenant()` |
+| `tenants` | `id`, `slug` unique, `name`, `active_policy_version_id` | RLS: `id = aegis_current_tenant()`. A single pointer, so exactly one version is active per tenant |
 | `users` | `email` unique per tenant, `password_hash`, `role`, `is_active` | Role is checked by `CHECK` |
 | `ai_assets` | `name`, `owner`, `risk_classification`, `intended_use`, `is_synthetic` | |
 | `agents` | `asset_id`, `name` unique per tenant, `owner`, `status` | |
@@ -39,9 +40,9 @@ tenants 1--* users
 | `resources` | `kind`, `name`, `classification`, `clearance`, `content` jsonb, `is_synthetic` | |
 | `agent_tool_grants` | `agent_id`, `tool` | PK `(tenant_id, agent_id, tool)` |
 | `agent_resource_grants` | `agent_id`, `resource_id` | PK `(tenant_id, agent_id, resource_id)` |
-| `policies` | `name` unique per tenant, `active_version_id` | |
-| `policy_versions` | `policy_id`, `version`, `document`, `content_hash`, `created_by` | Immutable by trigger |
-| `action_requests` | `agent_id`, `idempotency_key`, `tool`, `action`, `resource_id`, `params`, `action_hash`, `status` | `UNIQUE (tenant_id, agent_id, idempotency_key)` |
+| `policies` | `name` unique per tenant | |
+| `policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `created_by` | Immutable by trigger. The hash is checked at every load |
+| `action_requests` | `agent_id`, `idempotency_key`, `tool`, `action`, `resource_id`, `params_canonical`, `action_hash` | `UNIQUE (tenant_id, agent_id, idempotency_key)`. `resource_id` has no foreign key because it records what was *requested*, which may not exist. Parameters are stored as canonical text so the action hash can be recomputed exactly |
 | `policy_decisions` | `request_id`, `agent_id`, `resource_id`, `tool`, `action`, `policy_version_id`, `policy_version`, `outcome`, `reason_code`, `matched_rule_id`, `evaluated_at`, `evidence` | Append-only |
 | `approvals` | `request_id` unique, `decision_id`, `action_hash`, `status`, `expires_at`, `decided_by`, `decided_at`, `comment` | Transition trigger |
 | `executions` | `request_id` unique, `status`, `result`, `started_at`, `finished_at` | Unique constraint prevents re-execution |
@@ -70,14 +71,23 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 
 | Access | Tables |
 |--------|--------|
-| `SELECT, INSERT` only | `audit_events`, `policy_decisions`, `policy_versions`, `action_requests`, `simulated_outbox` |
-| `SELECT, INSERT, UPDATE` | `ai_assets`, `agents`, `agent_credentials`, `resources`, `policies`, `approvals`, `executions`, `users`, `audit_chain_heads` |
+| `SELECT` only | `users` |
+| `SELECT`, `UPDATE (active_policy_version_id)` | `tenants` |
+| `SELECT`, `UPDATE (seq, head_hash)` | `audit_chain_heads` |
+| `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events` |
+| `SELECT, INSERT`, `UPDATE (status)` | `agents` |
+| `SELECT, INSERT`, `UPDATE (revoked_at)` | `agent_credentials` |
+| `SELECT, INSERT`, `UPDATE (status, decided_by, decided_at, comment)` | `approvals` |
+| `SELECT, INSERT`, `UPDATE (status, result, finished_at)` | `executions` |
 | `SELECT, INSERT, DELETE` | `agent_tool_grants`, `agent_resource_grants` |
-| `SELECT, UPDATE` | `tenants` |
-| `EXECUTE` | `aegis_resolve_tenant(text)`, `aegis_current_tenant()` |
+| `EXECUTE` | `aegis_resolve_tenant(text)` |
 
-`action_requests.status` is derived rather than updated, so that table can stay
-insert-only: current state is read from the decision, approval, and execution rows.
+Updates are column-level, so the runtime role cannot change a request, an approval's binding,
+or an agent's owner. A test compares this table with the live catalog. Tenants and users can
+only be created by the owner role, through `aegis.provisioning`.
+
+A request's current state is read from its decision, approval, and execution rows, so
+`action_requests` can stay insert-only.
 
 ## `aegis_resolve_tenant(slug)`
 

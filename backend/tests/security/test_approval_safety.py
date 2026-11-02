@@ -6,10 +6,10 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from aegis.approvals.state import ALLOWED_TRANSITIONS, can_transition
-from aegis.db.models import Approval
+from aegis.db.models import Approval, Execution
 from aegis.db.session import Database
 
 PARAMS = {"operator": "add", "a": 1, "b": 2}
@@ -167,7 +167,8 @@ def test_parameters_changed_in_the_database_after_approval_cancel_it(
     assert response.status_code == 409
     assert world.spy.calls == []
     assert tenant.get(f"/approvals/{body['approval_id']}").json()["status"] == "CANCELLED"
-    assert tenant.audit_events("approval.cancelled")[0]["payload"]["reason"] == "ACTION_HASH_MISMATCH"
+    cancelled = tenant.audit_events("approval.cancelled")
+    assert cancelled[0]["payload"]["reason"] == "ACTION_HASH_MISMATCH"
 
 
 def test_disabling_agent_after_approval_cancels(world, tenant):
@@ -315,6 +316,54 @@ def test_database_refuses_changing_what_an_approval_is_bound_to(world, tenant):
         with pytest.raises(DBAPIError):
             with database.tenant_transaction(tenant.id) as session:
                 session.get(Approval, body["approval_id"]).action_hash = uuid4().hex
+    finally:
+        database.dispose()
+
+
+def test_database_refuses_a_second_execution_for_a_request(world, tenant):
+    """The unique constraint holds even if application locking were wrong."""
+    tenant.allow_everything()
+    agent = tenant.agent(tools=["calculate"])
+    body = agent.act("calculate", params=PARAMS).json()
+    assert body["execution"]["status"] == "SUCCEEDED"
+
+    database = Database(world.urls.app, pool_size=1, max_overflow=0)
+    try:
+        with pytest.raises(IntegrityError):
+            with database.tenant_transaction(tenant.id) as session:
+                session.add(
+                    Execution(
+                        id=uuid4(),
+                        tenant_id=tenant.id,
+                        request_id=body["request_id"],
+                        status="STARTED",
+                        started_at=datetime.now(UTC),
+                    )
+                )
+                session.flush()
+    finally:
+        database.dispose()
+
+
+def test_database_refuses_a_second_approval_for_a_request(world, tenant):
+    _, body = held_action(tenant)
+    database = Database(world.urls.app, pool_size=1, max_overflow=0)
+    try:
+        with pytest.raises(IntegrityError):
+            with database.tenant_transaction(tenant.id) as session:
+                session.add(
+                    Approval(
+                        id=uuid4(),
+                        tenant_id=tenant.id,
+                        request_id=body["request_id"],
+                        decision_id=body["decision_id"],
+                        action_hash="0" * 64,
+                        status="APPROVED",
+                        requested_at=datetime.now(UTC),
+                        expires_at=datetime.now(UTC),
+                    )
+                )
+                session.flush()
     finally:
         database.dispose()
 

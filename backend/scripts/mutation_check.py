@@ -3,7 +3,7 @@
 Works on a temporary copy of the backend, so the source tree is never touched. A control
 whose removal goes unnoticed is reported as SURVIVED, and the script exits non-zero.
 
-    python scripts/mutation_check.py
+    python scripts/mutation_check.py [text matched against mutation names]
 """
 
 import os
@@ -51,7 +51,8 @@ MUTATIONS = [
              "elif recomputed != approval.action_hash or recomputed != request.action_hash:",
              "elif False:", f"{SEC}/test_approval_safety.py"),
     Mutation("Approval expiry not checked at execution", GATEWAY,
-             "if now >= approval.expires_at:\n            refused", "if False:\n            refused",
+             "if now >= approval.expires_at:\n            refused",
+             "if False:\n            refused",
              f"{SEC}/test_approval_safety.py"),
     Mutation("Idempotency key content not compared", GATEWAY,
              "if existing is not None and existing.action_hash != action_hash:", "if False:",
@@ -78,7 +79,7 @@ MUTATIONS = [
              "tests/unit/test_policy_engine.py"),
     Mutation("Hash ignores payload", "src/aegis/audit/chain.py",
              '"payload": event.payload,', "", f"{SEC}/test_audit_integrity.py"),
-    Mutation("Hash ignores previous hash", "src/aegis/audit/chain.py",
+    Mutation("Chain link not checked", "src/aegis/audit/chain.py",
              'if event.prev_hash != previous_hash:', 'if False:',
              f"{SEC}/test_audit_integrity.py"),
     Mutation("Verification ignores head", "src/aegis/audit/chain.py",
@@ -125,7 +126,7 @@ MUTATIONS = [
     Mutation("Runtime role may update audit events", MIGRATION,
              '"GRANT SELECT, INSERT ON audit_events TO aegis_app",',
              '"GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON audit_events TO aegis_app",',
-             f"{SEC}/test_audit_integrity.py"),
+             f"{SEC}/test_tenant_isolation_db.py"),
     Mutation("Append-only trigger absent", MIGRATION,
              'for table in ("audit_events", "policy_decisions", "policy_versions")',
              'for table in ("policy_decisions", "policy_versions")',
@@ -137,7 +138,7 @@ MUTATIONS = [
     Mutation("Runtime role may edit policy versions", MIGRATION,
              '"GRANT SELECT, INSERT ON policy_versions TO aegis_app",',
              '"GRANT SELECT, INSERT, UPDATE, DELETE ON policy_versions TO aegis_app",',
-             f"{SEC}/test_policy_versions.py"),
+             f"{SEC}/test_tenant_isolation_db.py"),
     Mutation("Composite tenant foreign key absent", MIGRATION,
              "FOREIGN KEY (tenant_id, asset_id) REFERENCES ai_assets (tenant_id, id)",
              "FOREIGN KEY (asset_id) REFERENCES ai_assets (id)",
@@ -148,7 +149,7 @@ MUTATIONS = [
              "    CREATE TABLE simulated_outbox",
              "FOREIGN KEY (tenant_id, request_id) REFERENCES action_requests (tenant_id, id)\n"
              "    )\n    \"\"\",\n    \"\"\"\n    CREATE TABLE simulated_outbox",
-             f"{SEC}/test_tenant_isolation_db.py"),
+             f"{SEC}/test_approval_safety.py"),
 ]
 
 
@@ -162,6 +163,11 @@ def run_tests(root: Path, tests: str) -> subprocess.CompletedProcess:
 
 
 def main() -> int:
+    wanted = [text.lower() for text in sys.argv[1:]]
+    selected = [
+        item for item in MUTATIONS
+        if not wanted or any(text in item.name.lower() for text in wanted)
+    ]
     survivors = []
     with tempfile.TemporaryDirectory(prefix="aegis-mutation-") as temporary:
         root = Path(temporary) / "backend"
@@ -174,7 +180,7 @@ def main() -> int:
             else:
                 shutil.copy(source, root / item)
 
-        for mutation in MUTATIONS:
+        for mutation in selected:
             path = root / mutation.file
             original = path.read_text(encoding="utf-8")
             if mutation.old not in original:
@@ -196,7 +202,7 @@ def main() -> int:
                 caught_by = failing[0].split(" ")[1].split("::")[-1] if failing else summary
                 print(f"caught    {mutation.name} <- {caught_by}", flush=True)
 
-    print(f"\n{len(MUTATIONS) - len(survivors)} of {len(MUTATIONS)} removed controls were caught.")
+    print(f"\n{len(selected) - len(survivors)} of {len(selected)} removed controls were caught.")
     if survivors:
         print("Not caught:", *survivors, sep="\n  ")
     return 1 if survivors else 0

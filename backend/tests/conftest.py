@@ -124,10 +124,10 @@ class World:
 @pytest.fixture
 def world(urls: DatabaseUrls, jwt_key_path: Path) -> Iterator[World]:
     from fastapi.testclient import TestClient
-    from support import ToolSpy
 
     from aegis.api.app import create_app
     from aegis.config import Settings
+    from support import ToolSpy
 
     settings = Settings(
         _env_file=None,

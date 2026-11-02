@@ -1,0 +1,42 @@
+# Local development only. The credentials below are throwaway values for a local container.
+# This file has not been run yet: the machine it was written on has no Docker.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: local-development-only
+    volumes:
+      - aegis-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ../backend
+    environment:
+      AEGIS_ADMIN_DATABASE_URL: postgresql://postgres:local-development-only@db:5432/postgres
+      AEGIS_API_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - aegis-dev:/app/.dev
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../frontend
+    environment:
+      AEGIS_API_URL: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  aegis-db:
+  aegis-dev:

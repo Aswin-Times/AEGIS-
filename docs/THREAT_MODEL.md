@@ -66,7 +66,7 @@ at the end.
 - **Existing mitigation:** RLS with `FORCE`, a `NOBYPASSRLS` runtime role, composite tenant foreign keys, and a tenant taken only from the verified principal.
 - **Required mitigation:** A test that fails if any new tenant table lacks RLS.
 - **Residual risk:** Low. A `SECURITY DEFINER` function is a controlled exception and is limited to returning a tenant ID for a slug.
-- **Verification test:** `test_tenant_isolation.py`, including `test_every_tenant_table_has_forced_rls`.
+- **Verification test:** `test_tenant_isolation.py` and `test_tenant_isolation_db.py`, including `test_every_table_with_tenant_id_has_forced_rls`.
 
 ### T5. Agent identity spoofing
 - **Protected asset:** A2, A5.
@@ -165,7 +165,7 @@ at the end.
 - **Existing mitigation:** Parameterized queries only. Separate owner and runtime roles. The runtime role cannot run DDL, bypass RLS, or change audit rows. ADV4 could, however, set `app.tenant_id` to any value, because the setting is not authenticated.
 - **Required mitigation:** Network isolation and credential rotation at deployment. Encryption of resource content at rest.
 - **Residual risk:** **ADV4 can cross tenants by setting the variable.** RLS protects against application bugs, not against arbitrary SQL execution. ADV5 has everything.
-- **Verification test:** `test_tenant_isolation.py::test_runtime_role_privileges`. This test also documents the variable limitation.
+- **Verification test:** `test_tenant_isolation_db.py`: `test_runtime_role_privileges`, `test_runtime_role_table_privileges_are_exactly_as_documented`, and `test_documented_limitation_arbitrary_sql_can_change_tenant_context`.
 
 ### T16. Authentication and session attacks
 - **Protected asset:** A5.
@@ -228,7 +228,15 @@ at the end.
 ## Known gaps, in priority order
 
 1. Free-text exfiltration to allowlisted destinations (T3).
-2. Login rate limiting (T16).
+2. Login and agent-authentication rate limiting (T16). Each failed attempt against a real tenant
+   also writes an audit event and takes the tenant's chain lock, so an unauthenticated attacker
+   can grow the log and slow decisions for that tenant.
 3. External anchoring for the audit chain (T11).
 4. Single-admin policy activation (T7).
 5. Static bearer keys for agents (T5).
+6. No content security policy on the dashboard. Next.js inline scripts need a nonce setup.
+7. Tool results are stored in `executions.result` so that retries can return them. Sensitive
+   content read through the gateway is therefore copied there.
+8. No operator workflow for executions stuck in `STARTED` after a crash (`DECISIONS.md` D-007).
+9. The body-size limit trusts `Content-Length`. Deployments should also enforce a limit at the
+   reverse proxy.

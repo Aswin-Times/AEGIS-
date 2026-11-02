@@ -42,7 +42,16 @@ backend/tests/
 | Policy versions | `security/test_policy_versions.py` |
 | Approval safety | `security/test_approval_safety.py` |
 | Audit integrity | `security/test_audit_integrity.py` |
+| Database privileges and catalog | `security/test_tenant_isolation_db.py` |
+| Dashboard, full stack | `frontend/e2e/dashboard.spec.ts` |
 | Investigation integrity | **Not yet: the feature does not exist (Phase 4)** |
+
+## Proving the tests can fail
+
+`backend/scripts/mutation_check.py` copies the backend to a temporary directory, removes one
+security control at a time (a role check, a grant, a trigger, a re-evaluation), and requires a
+test to fail. A control whose removal goes unnoticed is reported as `SURVIVED`. Its first run
+found four such gaps, which led to new tests. Run it after changing an enforcement path.
 
 ## Static guards
 
@@ -57,7 +66,8 @@ Tests that read the source and fail on a structural regression:
 ## Frontend
 
 - `npm run typecheck`, `npm run lint`, `npm run build`.
-- Manual browser verification against a live backend for milestone 1. Automated end-to-end tests are deferred and listed as a gap.
+- `npm run test:e2e`: Playwright, in a real browser, against the running stack. An actual agent key drives the gateway, and the test then checks what the dashboard shows. It uses the installed Microsoft Edge by default; set `AEGIS_E2E_CHANNEL=""` to use Playwright's Chromium.
+- No frontend unit tests yet. The components hold little logic, so end-to-end coverage came first.
 
 ## Reporting
 

@@ -63,9 +63,12 @@ Summarized here, specified in `SECURITY_BOUNDARIES.md`.
 
 ```
 txn 1: load facts -> evaluate -> insert request, decision, audit -> if ALLOW, insert execution(STARTED) + audit -> COMMIT
-       run tool (outside any transaction)
-txn 2: update execution(SUCCEEDED|FAILED) + audit -> COMMIT
+txn 2: run tool in a savepoint -> update execution(SUCCEEDED|FAILED) + audit -> COMMIT
 ```
+
+The synthetic tools only touch PostgreSQL, so running them inside txn 2 makes their effect
+atomic with the recorded outcome. A tool with external effects could not be atomic this way
+and would run between the two transactions.
 
 Evidence of intent is durable *before* the side effect. A crash between the two
 transactions leaves `STARTED` forever: execution is **at-most-once** by design, and a
@@ -84,7 +87,7 @@ reviewer -> txn: SELECT approval FOR UPDATE -> PENDING -> APPROVED|REJECTED + au
 agent POST /gateway/actions/{id}/execute ->
   txn: lock approval -> must be APPROVED and unexpired -> recompute action hash ->
        RE-EVALUATE policy against current state -> APPROVED -> EXECUTED + execution(STARTED) + audit
-  run tool; txn: record outcome
+  txn: run tool in a savepoint, record outcome
 ```
 
 Re-evaluation at execution closes the time-of-check/time-of-use gap: disabling the
@@ -102,6 +105,7 @@ agent or removing a grant after approval cancels the action.
 | Tool raises | `execution=FAILED`, audited; the error detail is not returned to the caller |
 | Outcome write fails after the tool ran | Execution remains `STARTED`; logged; visible as unresolved |
 | Tenant context missing | RLS returns zero rows, writes are rejected |
+| API started with a superuser, `BYPASSRLS`, or table-owning role | The process refuses to start |
 
 ## Tenant isolation
 
@@ -122,7 +126,7 @@ never accepted on tenant-scoped endpoints.
 | Persistence | SQLAlchemy 2 (sync) + psycopg 3, Alembic |
 | Database | PostgreSQL 16 |
 | Frontend | Next.js (App Router), TypeScript, Tailwind CSS, lucide icons |
-| Tests | pytest against real PostgreSQL; hypothesis for engine properties |
+| Tests | pytest against real PostgreSQL; hypothesis for engine properties; Playwright end to end |
 | Local dev | Docker Compose, or embedded PostgreSQL when Docker is absent |
 
 Redis Streams, OpenTelemetry export, OPA, and the LLM adapter are deferred until a

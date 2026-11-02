@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+:root {
+  --surface: #ffffff;
+  --canvas: #f5f6f8;
+  --subtle: #eef0f3;
+  --line: #dcdfe5;
+  --ink: #171a21;
+  --muted: #565d6b;
+  --accent: #1f4fbf;
+  --accent-ink: #ffffff;
+  --allow: #116b3e;
+  --allow-bg: #e3f4ea;
+  --deny: #a8201a;
+  --deny-bg: #fbe8e6;
+  --hold: #8a5300;
+  --hold-bg: #fdf0d9;
+  --neutral: #454c59;
+  --neutral-bg: #e9ebef;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #171a20;
+    --canvas: #101216;
+    --subtle: #20242b;
+    --line: #30353f;
+    --ink: #e8eaee;
+    --muted: #a0a7b4;
+    --accent: #8db0ff;
+    --accent-ink: #0d1424;
+    --allow: #6fd9a0;
+    --allow-bg: #12301f;
+    --deny: #ff9a92;
+    --deny-bg: #3a1614;
+    --hold: #f2bd66;
+    --hold-bg: #33260f;
+    --neutral: #bcc2cd;
+    --neutral-bg: #2a2f38;
+  }
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-canvas: var(--canvas);
+  --color-subtle: var(--subtle);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-allow: var(--allow);
+  --color-allow-bg: var(--allow-bg);
+  --color-deny: var(--deny);
+  --color-deny-bg: var(--deny-bg);
+  --color-hold: var(--hold);
+  --color-hold-bg: var(--hold-bg);
+  --color-neutral: var(--neutral);
+  --color-neutral-bg: var(--neutral-bg);
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
