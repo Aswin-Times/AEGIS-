@@ -70,6 +70,13 @@ tenants 1--* users
 | `governance_settings` | `enforcement_mode` (`observe`, `enforce`), `active_methodology_version_id` | `UNIQUE (tenant_id)`, one row per tenant. No row means `observe` and the built-in methodology. The methodology pointer has no foreign key until the table it references exists |
 | `governance_role_grants` | `user_id`, `role`, `granted_by`, `granted_at`, `revoked_by`, `revoked_at` | One role, `governance_reviewer`. A partial unique index allows one unrevoked grant per user and role. `CHECK (granted_by <> user_id)` backs the no-self-grant rule. A trigger allows a grant to be revoked once and never reinstated, and rejects `DELETE` and `TRUNCATE` |
 
+## Phase 3 tables (governance assets, migration `0006`)
+
+| Table | Key columns | Notes |
+|-------|-------------|-------|
+| `asset_profile_versions` | `asset_id`, `version`, `profile_canonical`, `content_hash`, `business_owner_id`, `technical_owner_id`, `created_by` | Immutable, with `UNIQUE (tenant_id, asset_id, version)`. The owner columns are composite foreign keys to `users`, so another tenant's user cannot be named. Rejects `UPDATE`, `DELETE`, and `TRUNCATE` |
+| `asset_governance_state` | Primary key `(tenant_id, asset_id)`. `status`, `version`, `current_profile_version_id`, `latest_assessment_id`, `current_decision_id`, `hard_block_decision_id`, `valid_until`, `next_review_at`, `updated_at` | No row means the asset is not governed, and the migration creates none. The profile pointer is a composite key that must name a version of the same asset. The decision and assessment pointers have no foreign key until their tables exist. `aegis_governance_state_guard` is described below |
+
 ## Deferred tables
 
 `governance_assessments`.
@@ -83,6 +90,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 |---------|-------|------|
 | `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
 | `aegis_approval_transition` | `approvals` | Allows only: `PENDING -> APPROVED, REJECTED, CANCELLED`, and `APPROVED -> EXECUTED, CANCELLED`. Forbids changing binding columns (`request_id`, `action_hash`, `decision_id`). Forbids `DELETE` |
+| `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update whose new status is `APPROVED` or `CONDITIONALLY_APPROVED`. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
 
 ## Runtime grants (`aegis_app`)
 
@@ -93,7 +101,8 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT`, `UPDATE (seq, head_hash)` | `audit_chain_heads` |
 | `SELECT, INSERT`, `UPDATE (enforcement_mode, active_methodology_version_id)` | `governance_settings` |
 | `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` | `governance_role_grants` |
-| `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence` |
+| `SELECT, INSERT`, `UPDATE (status, version, current_profile_version_id, latest_assessment_id, current_decision_id, hard_block_decision_id, valid_until, next_review_at, updated_at)` | `asset_governance_state` |
+| `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
 | `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
 | `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |
 | `SELECT, INSERT`, `UPDATE (llm_status, llm_provider, llm_model, llm_rejected_count, llm_finished_at)` | `investigation_runs` |

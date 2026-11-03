@@ -337,6 +337,35 @@ class GovernanceRoleGrant(Base):
     revoked_at: Mapped[datetime | None]
 
 
+class AssetProfileVersion(Base):
+    __tablename__ = "asset_profile_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    version: Mapped[int]
+    profile_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    business_owner_id: Mapped[UUID | None]
+    technical_owner_id: Mapped[UUID | None]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class AssetGovernanceState(Base):
+    __tablename__ = "asset_governance_state"
+    tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(primary_key=True)
+    status: Mapped[str]
+    version: Mapped[int]
+    current_profile_version_id: Mapped[UUID | None]
+    latest_assessment_id: Mapped[UUID | None]
+    current_decision_id: Mapped[UUID | None]
+    hard_block_decision_id: Mapped[UUID | None]
+    valid_until: Mapped[datetime | None]
+    next_review_at: Mapped[datetime | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

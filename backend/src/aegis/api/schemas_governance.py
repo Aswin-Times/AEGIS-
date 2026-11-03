@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from aegis.api.schemas import In, Out
@@ -23,3 +24,14 @@ class PersonOut(Out):
     email: str
     role: str
     reviewer_grant_id: UUID | None
+
+
+class ProfileVersionOut(Out):
+    id: UUID
+    asset_id: UUID
+    version: int
+    profile: dict[str, Any]
+    content_hash: str
+    created_by: UUID
+    created_at: datetime
+    governance_status: str
