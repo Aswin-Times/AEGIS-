@@ -261,6 +261,28 @@ def test_trigger_rejects_hard_block_clear_without_approval(db, tenant, attacker_
     assert _state(db, tenant, asset["id"])[0] == "APPROVED"
 
 
+def test_trigger_rejects_hard_block_clear_without_a_move_into_approval(db, tenant, attacker_sql):
+    asset = tenant.asset()
+    _save(tenant, asset["id"])
+    _move(db, tenant, asset["id"], "ASSESSMENT_REQUIRED")
+    _move(db, tenant, asset["id"], "UNDER_REVIEW")
+    _move(db, tenant, asset["id"], "APPROVED")
+    attacker_sql.execute(
+        "UPDATE asset_governance_state SET hard_block_decision_id = %s, "
+        "version = version + 1 WHERE asset_id = %s",
+        (uuid4(), asset["id"]),
+    )
+    # The row is already APPROVED, so a status-unchanged update is not a move into approval.
+    for extra in ("", ", status = 'APPROVED'"):
+        with pytest.raises(DBAPIError, match="hard block"):
+            _as_app(
+                db, tenant,
+                "UPDATE asset_governance_state SET hard_block_decision_id = NULL, "
+                f"version = version + 1 {extra} WHERE asset_id = :asset",
+                asset=asset["id"],
+            )
+
+
 def test_trigger_rejects_delete_and_binding_change(db, tenant, attacker_sql):
     asset, other = tenant.asset(), tenant.asset()
     _save(tenant, asset["id"])

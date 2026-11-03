@@ -118,9 +118,10 @@ STATEMENTS = [
             RAISE EXCEPTION 'invalid governance transition % to %', OLD.status, NEW.status
                 USING ERRCODE = '23514';
         END IF;
-        -- A human block is lifted only by the update that approves the asset.
+        -- A human block is lifted only by the update that moves the asset into an approval.
         IF OLD.hard_block_decision_id IS NOT NULL AND NEW.hard_block_decision_id IS NULL
-           AND NEW.status NOT IN ('APPROVED', 'CONDITIONALLY_APPROVED') THEN
+           AND (NEW.status = OLD.status
+                OR NEW.status NOT IN ('APPROVED', 'CONDITIONALLY_APPROVED')) THEN
             RAISE EXCEPTION 'the hard block can be cleared only by an approval'
                 USING ERRCODE = '23514';
         END IF;

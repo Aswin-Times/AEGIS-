@@ -90,7 +90,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 |---------|-------|------|
 | `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
 | `aegis_approval_transition` | `approvals` | Allows only: `PENDING -> APPROVED, REJECTED, CANCELLED`, and `APPROVED -> EXECUTED, CANCELLED`. Forbids changing binding columns (`request_id`, `action_hash`, `decision_id`). Forbids `DELETE` |
-| `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update whose new status is `APPROVED` or `CONDITIONALLY_APPROVED`. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
+| `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update that moves the status into `APPROVED` or `CONDITIONALLY_APPROVED`. A status-unchanged update cannot clear it. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
 
 ## Runtime grants (`aegis_app`)
 
