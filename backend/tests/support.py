@@ -71,6 +71,7 @@ class TenantWorld:
         self.id = tenant_id
         self.slug = slug
         self._tokens: dict[str, str] = {}
+        self._named: dict[str, tuple[str, dict[str, str]]] = {}
         self._counter = 0
 
     def _unique(self, prefix: str) -> str:
@@ -88,6 +89,38 @@ class TenantWorld:
             assert response.status_code == 200, response.text
             self._tokens[role] = response.json()["access_token"]
         return bearer(self._tokens[role])
+
+    def login_as(self, name: str, role: str) -> dict[str, str]:
+        """An additional, distinct user, for tests that need a second admin or reviewer."""
+        if name not in self._named:
+            email = f"{name}@{self.slug}.example.test"
+            create_user(self.urls.owner, self.id, email=email, password=PASSWORD, role=role)
+            response = self.client.post(
+                "/api/v1/auth/login",
+                json={"tenant_slug": self.slug, "email": email, "password": PASSWORD},
+            )
+            assert response.status_code == 200, response.text
+            self._named[name] = (role, bearer(response.json()["access_token"]))
+        return self._named[name][1]
+
+    def _headers_for(self, who: str) -> dict[str, str]:
+        return self._named[who][1] if who in self._named else self.login(who)
+
+    def user_id(self, role: str) -> str:
+        """The id of the user logged in as a role, or as a name given to login_as."""
+        response = self.client.get("/api/v1/auth/me", headers=self._headers_for(role))
+        assert response.status_code == 200, response.text
+        return response.json()["id"]
+
+    def grant_governance(self, role: str, by: str = "admin") -> dict[str, Any]:
+        """Give the governance_reviewer role to the user logged in as `role`, granted by `by`."""
+        response = self.post(
+            "/governance/role-grants",
+            {"user_id": self.user_id(role)},
+            headers=self._headers_for(by),
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
 
     @property
     def admin(self) -> dict[str, str]:

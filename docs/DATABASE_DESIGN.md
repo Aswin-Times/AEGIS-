@@ -63,6 +63,13 @@ tenants 1--* users
 | `investigation_findings` | `run_id`, `kind`, `source`, `statement`, `position` | Append-only. `CHECK ((source = 'llm') = (kind = 'ai_hypothesis'))`. A deferred constraint trigger requires evidence for facts, rule results, and hypotheses |
 | `finding_evidence` | One nullable foreign key per record type | `CHECK (num_nonnulls(...) = 1)`. All composite, so another tenant's record cannot be referenced |
 
+## Phase 3 tables (governance, migration `0005`)
+
+| Table | Key columns | Notes |
+|-------|-------------|-------|
+| `governance_settings` | `enforcement_mode` (`observe`, `enforce`), `active_methodology_version_id` | `UNIQUE (tenant_id)`, one row per tenant. No row means `observe` and the built-in methodology. The methodology pointer has no foreign key until the table it references exists |
+| `governance_role_grants` | `user_id`, `role`, `granted_by`, `granted_at`, `revoked_by`, `revoked_at` | One role, `governance_reviewer`. A partial unique index allows one unrevoked grant per user and role. `CHECK (granted_by <> user_id)` backs the no-self-grant rule. A trigger allows a grant to be revoked once and never reinstated, and rejects `DELETE` and `TRUNCATE` |
+
 ## Deferred tables
 
 `governance_assessments`.
@@ -84,6 +91,8 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT` only | `users` |
 | `SELECT`, `UPDATE (active_policy_version_id)` | `tenants` |
 | `SELECT`, `UPDATE (seq, head_hash)` | `audit_chain_heads` |
+| `SELECT, INSERT`, `UPDATE (enforcement_mode, active_methodology_version_id)` | `governance_settings` |
+| `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` | `governance_role_grants` |
 | `SELECT, INSERT` only | `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence` |
 | `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
 | `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |

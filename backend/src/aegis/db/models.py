@@ -316,6 +316,27 @@ class FindingEvidence(Base):
     audit_event_id: Mapped[UUID | None]
 
 
+class GovernanceSettings(Base):
+    __tablename__ = "governance_settings"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    enforcement_mode: Mapped[str]
+    active_methodology_version_id: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernanceRoleGrant(Base):
+    __tablename__ = "governance_role_grants"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    user_id: Mapped[UUID]
+    role: Mapped[str]
+    granted_by: Mapped[UUID]
+    granted_at: Mapped[datetime]
+    revoked_by: Mapped[UUID | None]
+    revoked_at: Mapped[datetime | None]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

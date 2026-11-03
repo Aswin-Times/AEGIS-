@@ -276,6 +276,8 @@ EXPECTED_TABLE_PRIVILEGES = {
     "investigation_runs": {"SELECT", "INSERT"},
     "investigation_findings": {"SELECT", "INSERT"},
     "finding_evidence": {"SELECT", "INSERT"},
+    "governance_settings": {"SELECT", "INSERT"},
+    "governance_role_grants": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -302,6 +304,8 @@ EXPECTED_COLUMN_UPDATES = {
         "llm_rejected_count",
         "llm_finished_at",
     },
+    "governance_settings": {"enforcement_mode", "active_methodology_version_id"},
+    "governance_role_grants": {"revoked_by", "revoked_at"},
 }
 
 

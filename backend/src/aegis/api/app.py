@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException
 
 from aegis.api import (
     routes_events,
+    routes_governance,
     routes_incidents,
     routes_investigation,
     routes_registry,
@@ -211,6 +212,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     app.include_router(routes_events.router, prefix="/api/v1")
     app.include_router(routes_incidents.router, prefix="/api/v1")
     app.include_router(routes_investigation.router, prefix="/api/v1")
+    app.include_router(routes_governance.router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=True)
     def healthz() -> dict[str, str]:
