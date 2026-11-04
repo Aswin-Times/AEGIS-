@@ -1,6 +1,9 @@
 """Risk assessments and methodology versions: what is recorded, from what, and who may change it."""
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
 import psycopg
@@ -792,3 +795,70 @@ def test_overview_counts_assessed_and_unassessed_from_latest_assessments(tenant)
     assert overview["total_assets"] == 4
     assert overview["by_assessed_risk"] == {"LOW": 1, "MEDIUM": 1, "HIGH": 0, "CRITICAL": 0}
     assert overview["unassessed"] == 2
+
+
+# Locking
+
+
+def test_assess_locks_agents_before_state(urls, tenant, attacker_sql):
+    """Spec 11.4: agent rows, then state, then the chain head. Suspend will take the same order."""
+    _, asset_id = agent_asset(tenant, tools=("calculate",))
+    save_profile(tenant, asset_id, LOW_PROFILE)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with psycopg.connect(urls.superuser, autocommit=True) as observer:
+            # The holder plays a suspend that already has the agent rows.
+            with attacker_sql.transaction():
+                attacker_sql.execute(
+                    "SELECT id FROM agents WHERE asset_id = %s FOR UPDATE", (asset_id,)
+                )
+                response = pool.submit(assess, tenant, asset_id)
+                waiting = 0
+                deadline = time.monotonic() + 15
+                while not waiting and time.monotonic() < deadline:
+                    waiting = observer.execute(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' AND query LIKE '%FROM agents%' "
+                        "AND pid <> pg_backend_pid()"
+                    ).fetchone()[0]
+                    time.sleep(0.05)
+                assert waiting, "assess did not block on the agent rows"
+                # Blocked on the agents, so it has not locked the state row yet.
+                with observer.transaction():
+                    observer.execute(
+                        "SELECT 1 FROM asset_governance_state WHERE asset_id = %s "
+                        "FOR UPDATE NOWAIT",
+                        (asset_id,),
+                    )
+                assert not response.done()
+        assert response.result(timeout=30).status_code == 201
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_concurrent_assess_and_profile_save_never_fail_or_deadlock(tenant):
+    asset_id = tenant.asset()["id"]
+    save_profile(tenant, asset_id, LOW_PROFILE)
+    headers = tenant.admin
+    rounds = 6
+    barrier = threading.Barrier(2)
+
+    def run(call):
+        barrier.wait(timeout=30)
+        return call().status_code
+
+    for number in range(rounds):
+        body = {**LOW_PROFILE, "description": f"concurrent {number}"}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            codes = [
+                pool.submit(run, lambda: tenant.post(f"{ASSETS}/{asset_id}/assess",
+                                                     headers=headers)),
+                pool.submit(run, lambda body=body: tenant.post(f"{ASSETS}/{asset_id}/profile", body,
+                                                     headers=headers)),
+            ]
+            results = [code.result(timeout=60) for code in codes]
+        assert all(code in (201, 409) for code in results), results
+
+    # Every assessment that was recorded is intact, and the chain still verifies.
+    assert risk_of(tenant, asset_id)["recomputed_matches"] is True
+    assert tenant.verify_audit()["valid"] is True

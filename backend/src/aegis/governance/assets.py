@@ -93,7 +93,7 @@ def save_profile(session: Session, user: UserPrincipal, now: datetime, asset_id:
     _require_tenant_user(session, profile.technical_owner_id, "technical_owner_id")
     # Two first saves could otherwise both pick version 1 or both insert the state row.
     session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(str(asset_id), 0))))
-    state = load_state(session, asset_id)
+    state = load_state_for_update(session, asset_id)
     require_not_retired(state)
 
     canonical = canonical_profile(profile)

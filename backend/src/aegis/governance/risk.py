@@ -421,11 +421,12 @@ def run_assessment(session: Session, registry: ToolRegistry, user: UserPrincipal
                    asset_id: UUID) -> RiskAssessment:
     if session.get(AiAsset, asset_id) is None:
         raise NotFound()
+    # Agent rows, then state, then the chain head (spec 11.4), the order suspend will take. The
+    # agent lock also keeps the grants read below from changing under an in-flight evaluation.
+    lock_asset_agents(session, asset_id)
     state = load_state_for_update(session, asset_id)
     require_not_retired(state)
     profile_version, profile = _current_profile(session, state)
-    # Grants are read under the same lock the gateway shares, so the level cannot change under us.
-    lock_asset_agents(session, asset_id)
 
     methodology_version = active_methodology(session, user.tenant_id, now)
     methodology = parse_methodology(methodology_version)
