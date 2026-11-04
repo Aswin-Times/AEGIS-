@@ -24,6 +24,10 @@ from aegis.api.schemas_governance import (
     MethodologyOut,
     OverviewOut,
     PersonOut,
+    PolicyIn,
+    PolicyOut,
+    PolicyVersionIn,
+    PolicyVersionOut,
     ProfileVersionOut,
     RiskOut,
     RoleGrantIn,
@@ -32,6 +36,14 @@ from aegis.api.schemas_governance import (
 from aegis.governance.assets import load_state, save_profile
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.inventory import asset_detail, list_inventory, overview
+from aegis.governance.policies import (
+    activate_version,
+    approve_version,
+    create_policy,
+    create_version,
+    deactivate_version,
+    list_policies,
+)
 from aegis.governance.profile import AssetProfile
 from aegis.governance.risk import (
     AssessmentRecord,
@@ -246,4 +258,61 @@ def methodologies_activate(id: UUID, user: AdminDep, container: ContainerDep):
     with container.db.tenant_transaction(user.tenant_id) as session:
         return MethodologyOut.model_validate(
             activate_methodology_version(session, user, container.clock(), id)
+        )
+
+
+# Policies
+
+
+@router.get("/policies", response_model=Page[PolicyOut])
+def policies_list(user: UserDep, container: ContainerDep, limit: LimitQuery = 50,
+                  offset: OffsetQuery = 0):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        views, total = list_policies(session, limit=limit, offset=offset)
+        return Page[PolicyOut](
+            items=[PolicyOut.model_validate(view) for view in views],
+            total=total, limit=limit, offset=offset,
+        )
+
+
+@router.post("/policies", response_model=PolicyOut, status_code=201)
+def policies_create(body: PolicyIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PolicyOut.model_validate(
+            create_policy(session, user, container.clock(), body.name, body.category)
+        )
+
+
+@router.post("/policies/{policy_id}/versions", response_model=PolicyVersionOut, status_code=201)
+def policy_versions_create(policy_id: UUID, body: PolicyVersionIn, user: AdminDep,
+                           container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PolicyVersionOut.model_validate(
+            create_version(session, user, container.clock(), policy_id, body.document,
+                           body.effective_from, body.review_by)
+        )
+
+
+@router.post("/policies/{policy_id}/versions/{id}/approve", response_model=PolicyVersionOut)
+def policy_versions_approve(policy_id: UUID, id: UUID, user: GovernanceReviewerDep,
+                            container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PolicyVersionOut.model_validate(
+            approve_version(session, user, container.clock(), policy_id, id)
+        )
+
+
+@router.post("/policies/{policy_id}/versions/{id}/activate", response_model=PolicyVersionOut)
+def policy_versions_activate(policy_id: UUID, id: UUID, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PolicyVersionOut.model_validate(
+            activate_version(session, user, container.clock(), policy_id, id)
+        )
+
+
+@router.post("/policies/{policy_id}/versions/{id}/deactivate", response_model=PolicyVersionOut)
+def policy_versions_deactivate(policy_id: UUID, id: UUID, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PolicyVersionOut.model_validate(
+            deactivate_version(session, user, container.clock(), policy_id, id)
         )

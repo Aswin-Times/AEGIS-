@@ -85,9 +85,19 @@ tenants 1--* users
 | `risk_methodology_events` | `version_id`, `event` (`APPROVED`, `ACTIVATED`), `actor_id`, `audit_event_id` | Append-only. Approval cannot live on the version row, because that row cannot change. A partial unique index allows one `APPROVED` event per version. Activation also sets `governance_settings.active_methodology_version_id` |
 | `risk_assessments` | `asset_id`, `profile_version_id`, `methodology_version_id`, `input_canonical`, `input_hash`, `result_canonical`, `result_hash`, `status`, `score`, `risk_level`, `assessed_by`, `audit_event_id`, `created_at` | Append-only. `(status = 'COMPLETE') = (risk_level IS NOT NULL)` and `(status = 'COMPLETE') = (score IS NOT NULL)`, so missing information can never be stored as a level. `UNIQUE (tenant_id, asset_id, id)` and a composite key to the profile version keep an assessment to one asset. The stored input and result let `GET .../risk` recompute it. "Latest" means the highest audit sequence of `audit_event_id`, never `created_at` |
 
+## Phase 3 tables (governance policies, migration `0008`)
+
+These are separate from the runtime `policies` and `policy_versions`, which stay the rules the gateway evaluates.
+
+| Table | Key columns | Notes |
+|-------|-------------|-------|
+| `governance_policies` | `name`, `category`, `created_by` | Append-only. A unique index on `(tenant_id, lower(name))` keeps names distinct |
+| `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | Append-only, with `UNIQUE (tenant_id, policy_id, version)`. `effective_from` is required and `review_by` optional, and `CHECK (review_by IS NULL OR review_by > effective_from)`. The hash is checked at every load, and a mismatch fails closed |
+| `governance_policy_events` | `policy_version_id`, `event` (`APPROVED`, `ACTIVATED`, `DEACTIVATED`), `actor_id`, `audit_event_id` | Append-only. A partial unique index allows one `APPROVED` event per version. A version's activation status is its latest `ACTIVATED` or `DEACTIVATED` event by audit sequence, never by `created_at`. `aegis_policy_event_guard` is described below |
+
 ## Deferred tables
 
-The remaining governance tables (policies, reviews, decisions, evidence, compliance, and gateway checks) arrive with later migrations.
+The remaining governance tables (reviews, decisions, evidence, compliance, and gateway checks) arrive with later migrations.
 
 `users.role` is a single fixed role. A roles-and-permissions table has no use until
 custom roles are a requirement (`DECISIONS.md` D-009).
@@ -96,9 +106,10 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 
 | Trigger | Table | Rule |
 |---------|-------|------|
-| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
+| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `governance_policies`, `governance_policy_versions`, `governance_policy_events` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
 | `aegis_approval_transition` | `approvals` | Allows only: `PENDING -> APPROVED, REJECTED, CANCELLED`, and `APPROVED -> EXECUTED, CANCELLED`. Forbids changing binding columns (`request_id`, `action_hash`, `decision_id`). Forbids `DELETE` |
 | `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update that moves the status into `APPROVED` or `CONDITIONALLY_APPROVED`. A status-unchanged update cannot clear it. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
+| `aegis_policy_event_guard` | `governance_policy_events` | On insert, an `APPROVED` event cannot name the version's creator as actor, and an `ACTIVATED` event needs an existing `APPROVED` event for the version |
 
 ## Runtime grants (`aegis_app`)
 
@@ -110,7 +121,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT, INSERT`, `UPDATE (enforcement_mode, active_methodology_version_id)` | `governance_settings` |
 | `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` | `governance_role_grants` |
 | `SELECT, INSERT`, `UPDATE (status, version, current_profile_version_id, latest_assessment_id, current_decision_id, hard_block_decision_id, valid_until, next_review_at, updated_at)` | `asset_governance_state` |
-| `SELECT, INSERT` only | `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
+| `SELECT, INSERT` only | `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
 | `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
 | `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |
 | `SELECT, INSERT`, `UPDATE (llm_status, llm_provider, llm_model, llm_rejected_count, llm_finished_at)` | `investigation_runs` |

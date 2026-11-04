@@ -407,6 +407,41 @@ class RiskAssessment(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class GovernancePolicy(Base):
+    __tablename__ = "governance_policies"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    name: Mapped[str]
+    category: Mapped[str]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernancePolicyVersion(Base):
+    __tablename__ = "governance_policy_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    policy_id: Mapped[UUID]
+    version: Mapped[int]
+    document_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    effective_from: Mapped[datetime]
+    review_by: Mapped[datetime | None]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernancePolicyEvent(Base):
+    __tablename__ = "governance_policy_events"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    policy_version_id: Mapped[UUID]
+    event: Mapped[str]
+    actor_id: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

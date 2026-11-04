@@ -27,6 +27,7 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
+from aegis.governance.policies import PolicyIntegrityError
 from aegis.governance.risk import MethodologyIntegrityError
 from aegis.llm.factory import build_llm_provider
 from aegis.logging_config import configure_logging
@@ -124,6 +125,13 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error_response(
             request, 503, "METHODOLOGY_INTEGRITY_FAILED",
             "A stored risk methodology cannot be trusted.",
+        )
+
+    @app.exception_handler(PolicyIntegrityError)
+    async def handle_policy_integrity(request: Request, error: PolicyIntegrityError):
+        logger.error("a stored governance policy failed its integrity check")
+        return _error_response(
+            request, 503, "POLICY_INTEGRITY_FAILED", "A stored governance policy cannot be trusted."
         )
 
     @app.exception_handler(IntegrityError)

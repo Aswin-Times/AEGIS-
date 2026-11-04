@@ -2,8 +2,15 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from pydantic import AwareDatetime, model_validator
+
 from aegis.api.schemas import In, Out
 from aegis.governance.engine.risk import Methodology
+from aegis.governance.policy_schema import (
+    GovernancePolicyDocument,
+    PolicyCategory,
+    PolicyName,
+)
 
 
 class RoleGrantIn(In):
@@ -138,3 +145,46 @@ class MethodologyOut(Out):
     approved_at: datetime | None
     active: bool
     document: dict[str, Any]
+
+
+class PolicyIn(In):
+    name: PolicyName
+    category: PolicyCategory
+
+
+class PolicyVersionIn(In):
+    document: GovernancePolicyDocument
+    # Both must carry a time zone, because a window with no zone has no single meaning.
+    effective_from: AwareDatetime
+    review_by: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def review_follows_effect(self) -> "PolicyVersionIn":
+        if self.review_by is not None and self.review_by <= self.effective_from:
+            raise ValueError("review_by must be after effective_from")
+        return self
+
+
+class PolicyVersionOut(Out):
+    id: UUID
+    policy_id: UUID
+    version: int
+    content_hash: str
+    effective_from: datetime
+    review_by: datetime | None
+    created_by: UUID
+    created_at: datetime
+    approved: bool
+    approved_by: UUID | None
+    approved_at: datetime | None
+    active: bool
+    document: dict[str, Any]
+
+
+class PolicyOut(Out):
+    id: UUID
+    name: str
+    category: str
+    created_by: UUID
+    created_at: datetime
+    versions: list[PolicyVersionOut]

@@ -283,6 +283,9 @@ EXPECTED_TABLE_PRIVILEGES = {
     "risk_methodology_versions": {"SELECT", "INSERT"},
     "risk_methodology_events": {"SELECT", "INSERT"},
     "risk_assessments": {"SELECT", "INSERT"},
+    "governance_policies": {"SELECT", "INSERT"},
+    "governance_policy_versions": {"SELECT", "INSERT"},
+    "governance_policy_events": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {

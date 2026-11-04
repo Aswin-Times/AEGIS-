@@ -138,3 +138,58 @@ def test_methodology_versions_belong_to_one_tenant(world, db):
             ),
             {"id": uuid4(), "tenant": second.id, "other": built_in["id"]},
         )
+
+
+def test_cross_tenant_policy_access(world, db):
+    from datetime import UTC, datetime, timedelta
+
+    from aegis.governance.policies import applicable_documents
+
+    first, second = world.tenant(), world.tenant()
+    reviewer = first.login_as("second-admin", "admin")
+    first.grant_governance("admin", by="second-admin")
+    first.grant_governance("second-admin", by="admin")
+    second.grant_governance("reviewer")
+
+    body = {"document": {"description": "synthetic", "severity": "low",
+                         "controls": {"minimum_approvers": 2}},
+            "effective_from": (datetime.now(UTC) - timedelta(hours=1)).isoformat()}
+    policy = first.post("/governance/policies", {"name": "shared name", "category": "x"}).json()
+    version = first.post(f"/governance/policies/{policy['id']}/versions", body).json()
+    base = f"/governance/policies/{policy['id']}"
+    target = f"{base}/versions/{version['id']}"
+
+    # The other tenant sees none of it, and cannot approve, activate, or add to it.
+    assert second.get("/governance/policies").json()["items"] == []
+    assert second.post(f"{base}/versions", body).status_code == 404
+    for action, headers in (("approve", second.login("reviewer")),
+                            ("activate", None), ("deactivate", None)):
+        assert second.post(f"{target}/{action}", headers=headers).status_code == 404, action
+    for event in ("created", "approved", "activated", "deactivated"):
+        assert second.audit_events(f"governance.policy_version_{event}") == []
+
+    # Nothing changed on the owning side, which can still use its own routes.
+    assert first.post(f"{target}/approve", headers=reviewer).status_code == 200
+    assert first.post(f"{target}/activate").status_code == 200
+    assert [i["id"] for i in first.get("/governance/policies").json()["items"]] == [policy["id"]]
+    with db.tenant_transaction(second.id) as session:
+        assert applicable_documents(session, datetime.now(UTC)) == []
+    with db.tenant_transaction(first.id) as session:
+        assert len(applicable_documents(session, datetime.now(UTC))) == 1
+
+    # The same name is free in the other tenant, and nothing leaks across.
+    assert second.post("/governance/policies", {"name": "shared name", "category": "x"}
+                       ).status_code == 201
+    assert len(first.get("/governance/policies").json()["items"]) == 1
+
+    # Below the service, a version cannot be filed under another tenant's policy.
+    with pytest.raises(DBAPIError), db.tenant_transaction(second.id) as session:
+        session.execute(
+            text(
+                "INSERT INTO governance_policy_versions (id, tenant_id, policy_id, version, "
+                "document_canonical, content_hash, effective_from, created_by) VALUES "
+                "(:id, :tenant, :policy, 1, '{}', repeat('0', 64), now(), :creator)"
+            ),
+            {"id": uuid4(), "tenant": second.id, "policy": policy["id"],
+             "creator": second.user_id("admin")},
+        )
