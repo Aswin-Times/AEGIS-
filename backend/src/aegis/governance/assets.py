@@ -31,6 +31,15 @@ def load_state(session: Session, asset_id: UUID) -> AssetGovernanceState | None:
     ).scalar_one_or_none()
 
 
+def load_state_for_update(session: Session, asset_id: UUID) -> AssetGovernanceState | None:
+    """The state row, locked. Every transition runs under this lock (spec 7.1)."""
+    return session.execute(
+        select(AssetGovernanceState)
+        .where(AssetGovernanceState.asset_id == asset_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+
+
 def lock_asset_agents(session: Session, asset_id: UUID) -> None:
     """Serializes against in-flight gateway evaluations, which share-lock their agent row."""
     session.execute(

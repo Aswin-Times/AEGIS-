@@ -572,3 +572,21 @@ def test_engine_imports_no_clock_or_io():
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module)
     assert imported <= {"typing", "pydantic", "aegis.governance.profile"}
+
+
+def test_a_zero_weight_factor_adds_nothing_but_is_still_required():
+    document = M.model_dump(mode="json")
+    for factor in document["factors"]:
+        if factor["id"] == "third_party_reliance":
+            factor["weight"] = 0
+    muted = Methodology.model_validate(document)
+    unvetted = assess(full_inputs(third_party_reliance="unvetted"), muted)
+    assert unvetted.score == assess(full_inputs(third_party_reliance="none"), muted).score
+    assert unvetted.status == "COMPLETE"
+
+    absent = {**LOW}
+    del absent["third_party_reliance"]
+    incomplete = assess(RiskInputs(**absent), muted)
+    assert (incomplete.status, incomplete.risk_level, incomplete.missing) == (
+        "INCOMPLETE", None, ["third_party_reliance"],
+    )

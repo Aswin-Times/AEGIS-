@@ -14,7 +14,9 @@ from aegis.db.models import (
     AiAsset,
     AssetGovernanceState,
     AssetProfileVersion,
+    AuditEvent,
     GovernanceSettings,
+    RiskAssessment,
     User,
 )
 from aegis.errors import NotFound
@@ -25,6 +27,22 @@ DEFAULT_ENFORCEMENT_MODE = "observe"
 
 _business = aliased(User)
 _technical = aliased(User)
+
+# Each asset's newest assessment, by audit sequence because timestamps can tie. An incomplete
+# newest assessment has a null risk level, so it never falls back to an older complete one.
+_ranked = (
+    select(
+        RiskAssessment.asset_id.label("asset_id"),
+        RiskAssessment.risk_level.label("risk_level"),
+        RiskAssessment.created_at.label("assessed_at"),
+        func.row_number()
+        .over(partition_by=RiskAssessment.asset_id, order_by=AuditEvent.seq.desc())
+        .label("position"),
+    )
+    .join(AuditEvent, AuditEvent.id == RiskAssessment.audit_event_id)
+    .subquery("ranked_assessments")
+)
+_latest = select(_ranked).where(_ranked.c.position == 1).subquery("latest_assessments")
 
 
 @dataclass(frozen=True)
@@ -40,6 +58,7 @@ class InventoryRow:
     owner: str
     declared_risk: str
     assessed_risk: str | None
+    last_assessed_at: datetime | None
     governance_status: str | None
     business_owner: OwnerRef | None
     technical_owner: OwnerRef | None
@@ -93,6 +112,7 @@ def _joined(statement: Select) -> Select:
         )
         .outerjoin(_business, _business.id == AssetProfileVersion.business_owner_id)
         .outerjoin(_technical, _technical.id == AssetProfileVersion.technical_owner_id)
+        .outerjoin(_latest, _latest.c.asset_id == AiAsset.id)
     )
 
 
@@ -103,6 +123,8 @@ _ROW_COLUMNS = (
     AiAsset.risk_classification.label("declared_risk"),
     AiAsset.is_synthetic.label("is_synthetic"),
     AiAsset.created_at.label("created_at"),
+    _latest.c.risk_level.label("assessed_risk"),
+    _latest.c.assessed_at.label("last_assessed_at"),
     AiAsset.intended_use.label("intended_use"),
     AssetGovernanceState.status.label("status"),
     AssetGovernanceState.version.label("state_version"),
@@ -126,8 +148,9 @@ def _row_fields(row) -> dict[str, Any]:
         "name": row.name,
         "owner": row.owner,
         "declared_risk": row.declared_risk,
-        # Declared risk is never a stand-in. This is filled from assessments, which come later.
-        "assessed_risk": None,
+        # Declared risk is never a stand-in for this.
+        "assessed_risk": row.assessed_risk,
+        "last_assessed_at": row.last_assessed_at,
         "governance_status": row.status,
         "business_owner": _owner(row.business_id, row.business_email),
         "technical_owner": _owner(row.technical_id, row.technical_email),
@@ -145,9 +168,9 @@ def like_pattern(term: str) -> str:
 
 
 def list_inventory(session: Session, *, search: str | None, risk: str | None,
-                   status: str | None, owner_id: UUID | None, limit: int,
-                   offset: int) -> tuple[list[InventoryRow], int]:
-    """`risk` filters the declared value, the only risk an unassessed asset has."""
+                   declared_risk: str | None, status: str | None, owner_id: UUID | None,
+                   limit: int, offset: int) -> tuple[list[InventoryRow], int]:
+    """`risk` filters the assessed level and `declared_risk` the registrant's value."""
     conditions: list[ColumnElement[bool]] = []
     if search and search.strip():
         pattern = like_pattern(search.strip())
@@ -155,7 +178,9 @@ def list_inventory(session: Session, *, search: str | None, risk: str | None,
             or_(AiAsset.name.ilike(pattern, escape="\\"), AiAsset.owner.ilike(pattern, escape="\\"))
         )
     if risk:
-        conditions.append(AiAsset.risk_classification == risk)
+        conditions.append(_latest.c.risk_level == risk)
+    if declared_risk:
+        conditions.append(AiAsset.risk_classification == declared_risk)
     if status:
         conditions.append(AssetGovernanceState.status == status)
     if owner_id:
@@ -222,8 +247,14 @@ def overview(session: Session, now: datetime) -> OverviewView:
         )
     ).scalar_one()
     mode = session.execute(select(GovernanceSettings.enforcement_mode)).scalar_one_or_none()
-    # Risk assessments arrive with the risk engine, so none is complete yet.
-    assessed = {level: 0 for level in RISK_LEVELS}
+    counts = dict(
+        session.execute(
+            select(_latest.c.risk_level, func.count())
+            .where(_latest.c.risk_level.is_not(None))
+            .group_by(_latest.c.risk_level)
+        ).all()
+    )
+    assessed = {level: counts.get(level, 0) for level in RISK_LEVELS}
     return OverviewView(
         total_assets=total,
         by_assessed_risk=assessed,

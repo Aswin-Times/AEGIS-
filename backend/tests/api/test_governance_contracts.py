@@ -77,14 +77,17 @@ def test_inventory_search_and_filters(db, tenant):
     assert ids(tenant.get(ASSETS, search="triage")) == {alpha["id"], beta["id"]}
     assert ids(tenant.get(ASSETS, search="TRIAGE")) == {alpha["id"], beta["id"]}
     assert ids(tenant.get(ASSETS, search="summary")) == {gamma["id"]}
-    assert ids(tenant.get(ASSETS, risk="high")) == {alpha["id"], gamma["id"]}
+    assert ids(tenant.get(ASSETS, declared_risk="high")) == {alpha["id"], gamma["id"]}
     assert ids(tenant.get(ASSETS, status="DRAFT")) == {alpha["id"]}
     assert ids(tenant.get(ASSETS, status="ASSESSMENT_REQUIRED")) == {beta["id"]}
     assert ids(tenant.get(ASSETS, owner_id=admin_id)) == {alpha["id"]}
     assert ids(tenant.get(ASSETS, owner_id=reviewer_id)) == {beta["id"]}
-    both = tenant.get(ASSETS, search="triage", risk="high", status="DRAFT", owner_id=admin_id)
+    both = tenant.get(
+        ASSETS, search="triage", declared_risk="high", status="DRAFT", owner_id=admin_id
+    )
     assert ids(both) == {alpha["id"]}
-    assert ids(tenant.get(ASSETS, search="triage", risk="low", owner_id=admin_id)) == set()
+    none = tenant.get(ASSETS, search="triage", declared_risk="low", owner_id=admin_id)
+    assert ids(none) == set()
 
     owned = find(tenant.get(ASSETS, owner_id=admin_id).json()["items"], alpha["id"])
     assert owned["business_owner"] == {"id": admin_id, "email": email_of(tenant, "admin")}
@@ -95,7 +98,9 @@ def test_inventory_search_and_filters(db, tenant):
 
 
 @pytest.mark.parametrize(
-    "params", [{"status": "REVOKED"}, {"risk": "extreme"}, {"owner_id": "not-a-uuid"}]
+    "params",
+    [{"status": "REVOKED"}, {"risk": "extreme"}, {"declared_risk": "extreme"},
+     {"owner_id": "not-a-uuid"}],
 )
 def test_inventory_rejects_invalid_filters(tenant, params):
     assert tenant.get(ASSETS, **params).status_code == 422

@@ -366,6 +366,47 @@ class AssetGovernanceState(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class RiskMethodologyVersion(Base):
+    __tablename__ = "risk_methodology_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    version: Mapped[int]
+    document_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    created_by: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class RiskMethodologyEvent(Base):
+    __tablename__ = "risk_methodology_events"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    version_id: Mapped[UUID]
+    event: Mapped[str]
+    actor_id: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class RiskAssessment(Base):
+    __tablename__ = "risk_assessments"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    profile_version_id: Mapped[UUID]
+    methodology_version_id: Mapped[UUID]
+    input_canonical: Mapped[str] = mapped_column(Text)
+    input_hash: Mapped[str]
+    result_canonical: Mapped[str] = mapped_column(Text)
+    result_hash: Mapped[str]
+    status: Mapped[str]
+    score: Mapped[int | None]
+    risk_level: Mapped[str | None]
+    assessed_by: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

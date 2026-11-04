@@ -27,6 +27,21 @@ def test_cross_tenant_asset_access_is_not_found(world):
     assert second.get(detail).status_code == 404
     assert first.get(detail).status_code == 200
 
+    # The risk routes: the other tenant finds nothing, and cannot cause an assessment.
+    profile = {"impact_level": "minor"}
+    assert first.post(path, profile).status_code == 201
+    assess, risk, history = (f"{detail}/{name}" for name in ("assess", "risk", "assessments"))
+    assert second.post(assess).status_code == 404
+    assert second.get(risk).status_code == 404
+    assert second.get(history).status_code == 404
+    assert second.audit_events("governance.risk_assessed") == []
+    assert first.post(assess).status_code == 201
+    assert first.get(risk).json()["assessment"]["asset_id"] == asset["id"]
+    assert first.get(history).json()["total"] == 1
+    assert second.get(history).status_code == 404
+    assert second.get("/governance/assets", risk="LOW").json()["total"] == 0
+    assert second.get("/governance/overview").json()["by_assessed_risk"]["LOW"] == 0
+
 
 def test_inventory_and_overview_cover_only_this_tenant(world):
     first, second = world.tenant(), world.tenant()
@@ -96,3 +111,30 @@ def test_governance_settings_refuse_an_unknown_enforcement_mode(world, db):
         _insert_settings(db, tenant.id, "monitor")
     assert _visible_modes(db, tenant.id) == []
     assert tenant.get("/governance/overview").json()["enforcement_mode"] == "observe"
+
+
+def test_methodology_versions_belong_to_one_tenant(world, db):
+    first, second = world.tenant(), world.tenant()
+    built_in = first.get("/governance/methodologies").json()["items"][0]
+    second.get("/governance/methodologies")
+    own = second.get("/governance/methodologies").json()["items"]
+    assert len(own) == 1 and own[0]["id"] != built_in["id"]
+
+    second.grant_governance("reviewer")
+    path = f"/governance/methodologies/{built_in['id']}"
+    assert second.post(f"{path}/activate").status_code == 404
+    assert second.post(f"{path}/approve", headers=second.login("reviewer")).status_code == 404
+    # Nothing changed on either side.
+    assert first.audit_events("governance.methodology_activated") == []
+    assert second.audit_events("governance.methodology_activated") == []
+    assert second.get("/governance/methodologies").json()["items"][0]["active"] is True
+
+    # The tenant's own version cannot be made to point at another tenant's, below the service.
+    with pytest.raises(DBAPIError), db.tenant_transaction(second.id) as session:
+        session.execute(
+            text(
+                "INSERT INTO governance_settings "
+                "(id, tenant_id, active_methodology_version_id) VALUES (:id, :tenant, :other)"
+            ),
+            {"id": uuid4(), "tenant": second.id, "other": built_in["id"]},
+        )

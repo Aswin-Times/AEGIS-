@@ -24,7 +24,7 @@ RiskLevel = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 _RANK: dict[str, int] = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 Level = Annotated[int, Field(ge=0, le=MAX_LEVEL)]
-Weight = Annotated[int, Field(ge=1, le=1000)]
+Weight = Annotated[int, Field(ge=0, le=1000)]
 
 # The values each input can take; a methodology's level map must cover exactly these.
 _INPUT_VALUES: dict[str, tuple[str, ...]] = {

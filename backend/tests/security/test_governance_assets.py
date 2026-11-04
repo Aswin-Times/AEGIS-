@@ -323,9 +323,9 @@ def test_trigger_requires_version_increment(db, tenant):
             )
     # A status-unchanged update is allowed, and still has to advance the version.
     with pytest.raises(DBAPIError, match="version"):
-        _as_app(db, tenant, "UPDATE asset_governance_state SET latest_assessment_id = :id",
+        _as_app(db, tenant, "UPDATE asset_governance_state SET current_decision_id = :id",
                 id=uuid4())
-    _as_app(db, tenant, "UPDATE asset_governance_state SET latest_assessment_id = :id, "
+    _as_app(db, tenant, "UPDATE asset_governance_state SET current_decision_id = :id, "
             "version = version + 1", id=uuid4())
     assert _state(db, tenant, asset["id"])[:2] == ("DRAFT", 2)
 
@@ -400,7 +400,7 @@ def test_transition_service_checks_table_and_bumps_version(db, tenant):
         assert (state.status, state.version) == ("DRAFT", 1)
 
         transition(session, state, GovernanceStatus.ASSESSMENT_REQUIRED, now)
-        touch(session, state, now, latest_assessment_id=uuid4())
+        touch(session, state, now, current_decision_id=uuid4())
         with pytest.raises(ValueError):
             touch(session, state, now, asset_id=uuid4())
     assert _state(db, tenant, asset["id"])[:2] == ("ASSESSMENT_REQUIRED", 3)

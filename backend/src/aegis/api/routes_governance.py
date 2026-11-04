@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query
 from aegis.api.dependencies import (
     AdminDep,
     ContainerDep,
+    GovernanceReviewerDep,
     LimitQuery,
     OffsetQuery,
     ReviewerDep,
@@ -14,11 +15,17 @@ from aegis.api.dependencies import (
 )
 from aegis.api.schemas import Page
 from aegis.api.schemas_governance import (
+    AssessmentCreatedOut,
+    AssessmentOut,
+    AssessmentSummaryOut,
     AssetDetailOut,
     InventoryRowOut,
+    MethodologyIn,
+    MethodologyOut,
     OverviewOut,
     PersonOut,
     ProfileVersionOut,
+    RiskOut,
     RoleGrantIn,
     RoleGrantOut,
 )
@@ -26,6 +33,17 @@ from aegis.governance.assets import load_state, save_profile
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.inventory import asset_detail, list_inventory, overview
 from aegis.governance.profile import AssetProfile
+from aegis.governance.risk import (
+    AssessmentRecord,
+    activate_methodology_version,
+    approve_methodology_version,
+    create_methodology_version,
+    latest_assessment,
+    list_assessments,
+    list_methodologies,
+    recomputes_to_stored_result,
+    run_assessment,
+)
 from aegis.governance.roles import grant_role, list_people, revoke_grant
 
 router = APIRouter(prefix="/governance")
@@ -77,7 +95,8 @@ def assets_list(
     user: UserDep,
     container: ContainerDep,
     search: Annotated[str | None, Query(max_length=200)] = None,
-    risk: Literal["low", "medium", "high", "critical"] | None = None,
+    risk: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"] | None = None,
+    declared_risk: Literal["low", "medium", "high", "critical"] | None = None,
     status: GovernanceStatus | None = None,
     owner_id: UUID | None = None,
     limit: LimitQuery = 50,
@@ -85,8 +104,9 @@ def assets_list(
 ):
     with container.db.tenant_transaction(user.tenant_id) as session:
         rows, total = list_inventory(
-            session, search=search, risk=risk, status=status.value if status else None,
-            owner_id=owner_id, limit=limit, offset=offset,
+            session, search=search, risk=risk, declared_risk=declared_risk,
+            status=status.value if status else None, owner_id=owner_id, limit=limit,
+            offset=offset,
         )
         return Page[InventoryRowOut](
             items=[InventoryRowOut.model_validate(row) for row in rows],
@@ -113,4 +133,117 @@ def asset_profile_save(id: UUID, body: AssetProfile, user: AdminDep, container: 
             created_by=version.created_by,
             created_at=version.created_at,
             governance_status=load_state(session, id).status,
+        )
+
+
+# Risk assessments
+
+
+def _summary_fields(record: AssessmentRecord) -> dict:
+    assessment = record.assessment
+    return {
+        "id": assessment.id,
+        "asset_id": assessment.asset_id,
+        "profile_version_id": assessment.profile_version_id,
+        "methodology_version_id": assessment.methodology_version_id,
+        "methodology_version": record.methodology_version,
+        "input_hash": assessment.input_hash,
+        "result_hash": assessment.result_hash,
+        "status": assessment.status,
+        "score": assessment.score,
+        "risk_level": assessment.risk_level,
+        "assessed_by": assessment.assessed_by,
+        "assessed_at": assessment.created_at,
+        "audit_event_id": assessment.audit_event_id,
+    }
+
+
+def _stored_document(canonical: str) -> dict | None:
+    """None if the stored text is not a JSON object, which is what a tampered row looks like."""
+    try:
+        document = json.loads(canonical)
+    except ValueError:
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _assessment_out(record: AssessmentRecord) -> AssessmentOut:
+    return AssessmentOut(
+        **_summary_fields(record),
+        input=_stored_document(record.assessment.input_canonical),
+        result=_stored_document(record.assessment.result_canonical),
+    )
+
+
+@router.post("/assets/{id}/assess", response_model=AssessmentCreatedOut, status_code=201)
+def asset_assess(id: UUID, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        run_assessment(session, container.tools, user, container.clock(), id)
+        record = latest_assessment(session, id)
+        return AssessmentCreatedOut(
+            **_assessment_out(record).model_dump(),
+            governance_status=load_state(session, id).status,
+        )
+
+
+@router.get("/assets/{id}/risk", response_model=RiskOut)
+def asset_risk(id: UUID, user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        record = latest_assessment(session, id)
+        if record is None:
+            return RiskOut(assessment=None, recomputed_matches=None)
+        return RiskOut(
+            assessment=_assessment_out(record),
+            recomputed_matches=recomputes_to_stored_result(session, record.assessment),
+        )
+
+
+@router.get("/assets/{id}/assessments", response_model=Page[AssessmentSummaryOut])
+def asset_assessments(id: UUID, user: UserDep, container: ContainerDep,
+                      limit: LimitQuery = 50, offset: OffsetQuery = 0):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        records, total = list_assessments(session, id, limit=limit, offset=offset)
+        return Page[AssessmentSummaryOut](
+            items=[AssessmentSummaryOut(**_summary_fields(record)) for record in records],
+            total=total, limit=limit, offset=offset,
+        )
+
+
+# Risk methodology versions
+
+
+@router.get("/methodologies", response_model=Page[MethodologyOut])
+def methodologies_list(user: UserDep, container: ContainerDep, limit: LimitQuery = 50,
+                       offset: OffsetQuery = 0):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        views, total = list_methodologies(
+            session, user.tenant_id, container.clock(), limit=limit, offset=offset
+        )
+        return Page[MethodologyOut](
+            items=[MethodologyOut.model_validate(view) for view in views],
+            total=total, limit=limit, offset=offset,
+        )
+
+
+@router.post("/methodologies", response_model=MethodologyOut, status_code=201)
+def methodologies_create(body: MethodologyIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return MethodologyOut.model_validate(
+            create_methodology_version(session, user, container.clock(), body.document)
+        )
+
+
+@router.post("/methodologies/{id}/approve", response_model=MethodologyOut)
+def methodologies_approve(id: UUID, user: GovernanceReviewerDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return MethodologyOut.model_validate(
+            approve_methodology_version(session, user, container.clock(), id)
+        )
+
+
+@router.post("/methodologies/{id}/activate", response_model=MethodologyOut)
+def methodologies_activate(id: UUID, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return MethodologyOut.model_validate(
+            activate_methodology_version(session, user, container.clock(), id)
         )

@@ -27,6 +27,7 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
+from aegis.governance.risk import MethodologyIntegrityError
 from aegis.llm.factory import build_llm_provider
 from aegis.logging_config import configure_logging
 from aegis.security.access_events import record_access_failure
@@ -115,6 +116,14 @@ def _register_error_handlers(app: FastAPI) -> None:
         logger.error("a stored correlation rule failed its integrity check")
         return _error_response(
             request, 503, "RULE_INTEGRITY_FAILED", "A stored correlation rule cannot be trusted."
+        )
+
+    @app.exception_handler(MethodologyIntegrityError)
+    async def handle_methodology_integrity(request: Request, error: MethodologyIntegrityError):
+        logger.error("a stored risk methodology failed its integrity check")
+        return _error_response(
+            request, 503, "METHODOLOGY_INTEGRITY_FAILED",
+            "A stored risk methodology cannot be trusted.",
         )
 
     @app.exception_handler(IntegrityError)

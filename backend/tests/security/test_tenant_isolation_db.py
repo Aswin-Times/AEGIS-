@@ -280,6 +280,9 @@ EXPECTED_TABLE_PRIVILEGES = {
     "governance_role_grants": {"SELECT", "INSERT"},
     "asset_profile_versions": {"SELECT", "INSERT"},
     "asset_governance_state": {"SELECT", "INSERT"},
+    "risk_methodology_versions": {"SELECT", "INSERT"},
+    "risk_methodology_events": {"SELECT", "INSERT"},
+    "risk_assessments": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
