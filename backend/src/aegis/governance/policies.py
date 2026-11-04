@@ -7,7 +7,7 @@ latest event by audit sequence. These tables are separate from the runtime `poli
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -72,8 +72,28 @@ def _canonical_document(document: GovernancePolicyDocument) -> str:
     return canonical_json(document.model_dump(mode="json", exclude_none=True))
 
 
+def _instant(value: datetime | None) -> str | None:
+    """A fixed-width UTC text, so the same instant hashes the same whatever zone it is read in."""
+    return None if value is None else value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def version_hash(policy_id: UUID, version: int, effective_from: datetime,
+                 review_by: datetime | None, document_canonical: str) -> str:
+    """The hash covers everything that decides whether and how a version applies, not only the
+    document: moving `effective_from` would otherwise drop a policy without failing any check."""
+    return sha256_hex(canonical_json({
+        "policy_id": str(policy_id),
+        "version": version,
+        "effective_from": _instant(effective_from),
+        "review_by": _instant(review_by),
+        "document": document_canonical,
+    }))
+
+
 def parse_version(version: GovernancePolicyVersion) -> GovernancePolicyDocument:
-    if sha256_hex(version.document_canonical) != version.content_hash:
+    expected = version_hash(version.policy_id, version.version, version.effective_from,
+                            version.review_by, version.document_canonical)
+    if expected != version.content_hash:
         raise PolicyIntegrityError(f"policy version {version.id} failed its hash")
     try:
         return GovernancePolicyDocument.model_validate(json.loads(version.document_canonical))
@@ -198,13 +218,14 @@ def create_version(session: Session, user: UserPrincipal, now: datetime, policy_
         )
     ).scalar_one()
     canonical = _canonical_document(document)
+    number = (latest or 0) + 1
     version = GovernancePolicyVersion(
         id=uuid4(),
         tenant_id=user.tenant_id,
         policy_id=policy_id,
-        version=(latest or 0) + 1,
+        version=number,
         document_canonical=canonical,
-        content_hash=sha256_hex(canonical),
+        content_hash=version_hash(policy_id, number, effective_from, review_by, canonical),
         effective_from=effective_from,
         review_by=review_by,
         created_by=user.id,

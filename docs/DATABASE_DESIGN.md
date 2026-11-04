@@ -92,7 +92,7 @@ These are separate from the runtime `policies` and `policy_versions`, which stay
 | Table | Key columns | Notes |
 |-------|-------------|-------|
 | `governance_policies` | `name`, `category`, `created_by` | Append-only. A unique index on `(tenant_id, lower(name))` keeps names distinct |
-| `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | Append-only, with `UNIQUE (tenant_id, policy_id, version)`. `effective_from` is required and `review_by` optional, and `CHECK (review_by IS NULL OR review_by > effective_from)`. The hash is checked at every load, and a mismatch fails closed |
+| `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | Append-only, with `UNIQUE (tenant_id, policy_id, version)`. `effective_from` is required and `review_by` optional, and `CHECK (review_by IS NULL OR review_by > effective_from)`. `content_hash` covers `policy_id`, `version`, `effective_from`, `review_by` (UTC, fixed-width), and the document, so editing the window or the numbering is detected as well as the document. It is checked at every load, and a mismatch fails closed |
 | `governance_policy_events` | `policy_version_id`, `event` (`APPROVED`, `ACTIVATED`, `DEACTIVATED`), `actor_id`, `audit_event_id` | Append-only. A partial unique index allows one `APPROVED` event per version. A version's activation status is its latest `ACTIVATED` or `DEACTIVATED` event by audit sequence, never by `created_at`. `aegis_policy_event_guard` is described below |
 
 ## Deferred tables

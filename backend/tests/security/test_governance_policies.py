@@ -2,7 +2,7 @@
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import psycopg
@@ -174,17 +174,37 @@ def test_new_version_leaves_old_version_intact(tenant, attacker_sql):
     assert (new["approved"], new["active"]) == (False, False)
 
 
-def test_content_hash_is_the_hash_of_the_canonical_document(tenant, attacker_sql):
-    from aegis.canonical import sha256_hex
+def test_content_hash_covers_the_policy_number_window_and_document(tenant, attacker_sql):
+    from aegis.canonical import canonical_json, sha256_hex
 
     policy = new_policy(tenant)
-    version = new_version(tenant, policy["id"], required_evaluations=["b", "a"])
-    canonical, content_hash = attacker_sql.execute(
-        "SELECT document_canonical, content_hash FROM governance_policy_versions WHERE id = %s",
+    start = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
+    version = new_version(tenant, policy["id"], effective_from=start,
+                          review_by=start + timedelta(days=30), required_evaluations=["b", "a"])
+    canonical = attacker_sql.execute(
+        "SELECT document_canonical FROM governance_policy_versions WHERE id = %s",
         (version["id"],),
-    ).fetchone()
-    assert content_hash == sha256_hex(canonical) == version["content_hash"]
+    ).fetchone()[0]
     assert '"required_evaluations":["a","b"]' in canonical
+    assert version["content_hash"] == sha256_hex(canonical_json({
+        "policy_id": policy["id"],
+        "version": 1,
+        "effective_from": "2026-01-02T03:04:05.123456Z",
+        "review_by": "2026-02-01T03:04:05.123456Z",
+        "document": canonical,
+    }))
+
+
+def test_a_window_in_another_zone_still_matches_after_a_round_trip(db, tenant):
+    policy = new_policy(tenant)
+    zone = timezone(timedelta(hours=5, minutes=30))
+    start = datetime.now(UTC).astimezone(zone) - 2 * HOUR
+    version = active_version(tenant, policy["id"], effective_from=start,
+                             review_by=start + timedelta(days=1, microseconds=7),
+                             minimum_approvers=2)
+    (item,) = applicable(db, tenant)
+    assert item.version_id == UUID(version["id"])
+    assert tenant.get(POLICIES).status_code == 200
 
 
 # Validation
@@ -484,6 +504,14 @@ def test_two_active_versions_both_apply_and_the_stricter_wins(db, tenant):
 
 TAMPERS = [
     "content_hash = repeat('0', 64)",
+    # The window and the numbering decide whether a version applies, so they are covered too.
+    "effective_from = effective_from + interval '1 day'",
+    "effective_from = effective_from - interval '1 microsecond'",
+    "review_by = review_by - interval '1 day'",
+    "review_by = NULL",
+    "version = version + 10",
+    "policy_id = (SELECT id FROM governance_policies WHERE id <> policy_id AND tenant_id = "
+    "governance_policy_versions.tenant_id LIMIT 1)",
     "document_canonical = replace(document_canonical, '\"minimum_approvers\":1', "
     "'\"minimum_approvers\":2')",
     "document_canonical = '{\"surprise\":1}', content_hash = encode(sha256('{\"surprise\":1}'), "
@@ -498,8 +526,10 @@ def test_tampered_version_fails_closed(db, tenant, attacker_sql, tamper, world):
     active_version(other, other_policy["id"], minimum_approvers=1)
 
     policy = new_policy(tenant)
+    new_policy(tenant)  # Somewhere else for a version to be moved to.
     healthy = new_version(tenant, policy["id"], required_evaluations=["bias"])
-    version = active_version(tenant, policy["id"], minimum_approvers=1)
+    version = active_version(tenant, policy["id"], minimum_approvers=1,
+                             review_by=datetime.now(UTC) + 30 * 24 * HOUR)
     second = tenant.login_as("second-admin", "admin")
     force(attacker_sql, f"UPDATE governance_policy_versions SET {tamper} WHERE id = %s",
           (version["id"],))
@@ -513,6 +543,9 @@ def test_tampered_version_fails_closed(db, tenant, attacker_sql, tamper, world):
     for action in ("approve", "activate", "deactivate"):
         response = tenant.post(path(policy["id"], version["id"], action),
                                headers=second if action == "approve" else None)
+        if "policy_id" in tamper:  # Under another policy now, so not found under this one.
+            assert response.status_code == 404, action
+            continue
         assert response.status_code == 503, action
         assert response.json()["error"]["code"] == "POLICY_INTEGRITY_FAILED"
     # A version of the same policy that is intact can still be created.

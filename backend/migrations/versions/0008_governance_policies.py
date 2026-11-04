@@ -31,7 +31,8 @@ STATEMENTS = [
     """,
     "CREATE UNIQUE INDEX governance_policies_name ON governance_policies (tenant_id, lower(name))",
     # The document is the whole content of a version. Its approval and activation cannot be
-    # stored on this append-only row, so they are events. The hash is checked at every load.
+    # stored on this append-only row, so they are events. The hash covers the policy, number,
+    # window, and document, and is checked at every load.
     """
     CREATE TABLE governance_policy_versions (
         id uuid PRIMARY KEY,
