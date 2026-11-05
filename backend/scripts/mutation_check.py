@@ -29,6 +29,12 @@ EVIDENCE = "src/aegis/investigation/evidence.py"
 HYPOTHESES = "src/aegis/investigation/hypotheses.py"
 INVESTIGATION = "src/aegis/investigation/service.py"
 UNIT_RULES = "tests/unit/test_correlation_rules.py"
+APPROVALS = "src/aegis/governance/approvals.py"
+ASSETS = "src/aegis/governance/assets.py"
+REGISTRY = "src/aegis/registry/service.py"
+GOVERNANCE_ROUTES = "src/aegis/api/routes_governance.py"
+RETIRED_MIGRATION = "migrations/versions/0010_governance_retired.py"
+LIFECYCLE = f"{SEC}/test_governance_lifecycle_actions.py"
 
 
 @dataclass(frozen=True)
@@ -385,6 +391,54 @@ MUTATIONS = [
              "        if llm:\n"
              "            _ask_model(llm, prompt, llm_timeout_seconds)\n",
              "tests/security/test_llm_investigation.py"),
+    Mutation("Suspension sets no hard block", APPROVALS,
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)\n"
+             "    return decision\n\n\ndef retire",
+             "current_decision_id=decision.id,\n               "
+             "valid_until=None, next_review_at=None)\n    return decision\n\n\ndef retire",
+             LIFECYCLE),
+    Mutation("Suspension keeps the approval window", APPROVALS,
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)\n"
+             "    return decision\n\n\ndef retire",
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id)\n    return decision\n\n\ndef retire",
+             LIFECYCLE),
+    Mutation("Suspension leaves the review open", APPROVALS,
+             "review = _withdraw_open_review(session, asset_id, now)", "review = None",
+             LIFECYCLE),
+    Mutation("Retirement keeps the approval window", APPROVALS,
+             "current_decision_id=decision.id,\n               valid_until=None, "
+             "next_review_at=None)\n    return decision\n\n\ndef _reassessment_decision",
+             "current_decision_id=decision.id)\n    return decision\n\n\n"
+             "def _reassessment_decision", LIFECYCLE),
+    Mutation("Retired row may still change", RETIRED_MIGRATION,
+             "IF OLD.status = 'RETIRED' THEN", "IF FALSE THEN", LIFECYCLE),
+    Mutation("Changed profile does not force reassessment", ASSETS,
+             "forces_reassessment = state is not None and state.status in APPROVED_STATUSES",
+             "forces_reassessment = False", LIFECYCLE),
+    Mutation("Unchanged profile saves a new version", ASSETS,
+             "if current is not None and current.content_hash == content_hash:", "if False:",
+             LIFECYCLE),
+    Mutation("Added grant does not force reassessment", REGISTRY,
+             "    mark_grant_changed(session, user, now, agent_id)\n"
+             "    session.add(AgentToolGrant(",
+             "    session.add(AgentToolGrant(", LIFECYCLE),
+    Mutation("Grant hook acts on an unapproved asset", APPROVALS,
+             "if state is None or state.status not in APPROVED_STATUSES:",
+             "if state is None:", LIFECYCLE),
+    Mutation("State locked before the agent rows", ASSETS,
+             "    lock_asset_agents(session, asset_id)\n"
+             "    return load_state_for_update(session, asset_id)",
+             "    state = load_state_for_update(session, asset_id)\n"
+             "    lock_asset_agents(session, asset_id)\n    return state", LIFECYCLE),
+    Mutation("Reassess open to any user", GOVERNANCE_ROUTES,
+             "def asset_reassess(id: UUID, body: LifecycleIn, user: SuspenderDep,",
+             "def asset_reassess(id: UUID, body: LifecycleIn, user: UserDep,", LIFECYCLE),
+    Mutation("Retire open to a suspender", GOVERNANCE_ROUTES,
+             "def asset_retire(id: UUID, body: LifecycleIn, user: AdminDep,",
+             "def asset_retire(id: UUID, body: LifecycleIn, user: SuspenderDep,", LIFECYCLE),
 ]
 
 

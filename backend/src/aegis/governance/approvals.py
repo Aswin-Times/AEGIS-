@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from aegis.audit.chain import append_event, compute_event_hash
 from aegis.canonical import canonical_json, sha256_hex
 from aegis.db.models import (
+    Agent,
     AiAsset,
     AssetGovernanceState,
     AssetProfileVersion,
@@ -33,10 +34,14 @@ from aegis.db.models import (
 from aegis.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from aegis.gateway.tools import ToolRegistry
 from aegis.governance.assets import (
+    APPROVED_STATUSES,
     load_state,
     load_state_for_update,
     lock_asset_agents,
+    lock_asset_state,
+    new_draft_state,
     require_not_retired,
+    require_transition,
     transition,
 )
 from aegis.governance.conditions import Conditions, is_enforceable, validate_against_catalog
@@ -649,6 +654,153 @@ def reject(session: Session, user: UserPrincipal, now: datetime, review_id: UUID
     transition(session, state, GovernanceStatus.REJECTED, now, current_decision_id=decision.id,
                hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)
     return decision
+
+
+# Lifecycle actions outside a review
+
+
+def _stateful(session: Session, tenant_id: UUID, asset_id: UUID,
+              now: datetime) -> AssetGovernanceState:
+    """The locked state row of an asset, inserting the DRAFT row an ungoverned asset lacks.
+
+    That is the emergency path for an existing asset (spec 7.1): the row cannot be locked before
+    it exists, so the asset lock taken first is what makes the insert safe.
+    """
+    if session.get(AiAsset, asset_id) is None:
+        raise NotFound()
+    state = lock_asset_state(session, asset_id)
+    require_not_retired(state)
+    if state is None:
+        state = new_draft_state(session, tenant_id, asset_id, now)
+    return state
+
+
+def _withdraw_open_review(session: Session, asset_id: UUID,
+                          now: datetime) -> GovernanceReview | None:
+    """Close the review an asset leaves behind. No integrity check: an emergency stop must not
+    wait on a review row that fails one."""
+    review = _open_review_for_update(session, asset_id)
+    if review is not None:
+        review.status = ReviewStatus.WITHDRAWN.value
+        review.version += 1
+        review.closed_at = now
+        session.flush()
+    return review
+
+
+def suspend(session: Session, user: UserPrincipal, now: datetime, asset_id: UUID, *,
+            reason: str, kind: Literal["SUSPEND", "REVOKE"] = "SUSPEND") -> GovernanceDecision:
+    """Block an asset until a new approval. The caller must be an admin or a reviewer holder.
+
+    The decision becomes both the block and the current decision, and the approval window is
+    cleared, so an earlier approval cannot come back into force (spec 7.2). A revocation is the
+    same change, recorded under its own kind.
+    """
+    if kind not in (DecisionKind.SUSPEND, DecisionKind.REVOKE):
+        raise ValueError(f"not a suspension: {kind}")
+    state = _stateful(session, user.tenant_id, asset_id, now)
+    require_transition(state, GovernanceStatus.SUSPENDED)
+    review = _withdraw_open_review(session, asset_id, now)
+    decision = record_decision(
+        session,
+        asset_id=asset_id,
+        kind=kind,
+        from_status=state.status,
+        to_status=GovernanceStatus.SUSPENDED,
+        actor_type="user",
+        decided_by=user.id,
+        now=now,
+        reason=reason,
+        review_id=None if review is None else review.id,
+    )
+    transition(session, state, GovernanceStatus.SUSPENDED, now, current_decision_id=decision.id,
+               hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)
+    return decision
+
+
+def retire(session: Session, user: UserPrincipal, now: datetime, asset_id: UUID, *,
+           reason: str) -> GovernanceDecision:
+    """End an asset's life; nothing is accepted for it afterwards. The caller must be an admin.
+
+    A hard block stays, because the trigger lets only an approval clear it.
+    """
+    state = _stateful(session, user.tenant_id, asset_id, now)
+    require_transition(state, GovernanceStatus.RETIRED)
+    review = _withdraw_open_review(session, asset_id, now)
+    decision = record_decision(
+        session,
+        asset_id=asset_id,
+        kind=DecisionKind.RETIRE,
+        from_status=state.status,
+        to_status=GovernanceStatus.RETIRED,
+        actor_type="user",
+        decided_by=user.id,
+        now=now,
+        reason=reason,
+        review_id=None if review is None else review.id,
+    )
+    transition(session, state, GovernanceStatus.RETIRED, now, current_decision_id=decision.id,
+               valid_until=None, next_review_at=None)
+    return decision
+
+
+def _reassessment_decision(session: Session, state: AssetGovernanceState,
+                           actor_type: Literal["user", "system"], user_id: UUID | None,
+                           now: datetime, reason: str) -> GovernanceDecision:
+    """Move a locked state row to REASSESSMENT_REQUIRED and record why.
+
+    Only the status moves. The approval window, the current decision (which holds any conditions),
+    and a hard block all stay: a reassessment is not a new approval and not a release.
+    """
+    require_transition(state, GovernanceStatus.REASSESSMENT_REQUIRED)
+    decision = record_decision(
+        session,
+        asset_id=state.asset_id,
+        kind=DecisionKind.REQUIRE_REASSESSMENT,
+        from_status=state.status,
+        to_status=GovernanceStatus.REASSESSMENT_REQUIRED,
+        actor_type=actor_type,
+        decided_by=user_id,
+        now=now,
+        reason=reason,
+    )
+    transition(session, state, GovernanceStatus.REASSESSMENT_REQUIRED, now)
+    return decision
+
+
+def require_reassessment(session: Session, actor_type: Literal["user", "system"],
+                         user_id: UUID | None, now: datetime, asset_id: UUID, *,
+                         reason: str) -> GovernanceDecision:
+    """The system acts with no user (the review sweep); a user always names themselves."""
+    if (actor_type == "system") != (user_id is None):
+        raise ValueError("a reassessment has a user unless the system required it")
+    if session.get(AiAsset, asset_id) is None:
+        raise NotFound()
+    state = lock_asset_state(session, asset_id)
+    require_not_retired(state)
+    if state is None:
+        raise Conflict("An asset with no governance state cannot be reassessed.",
+                       code="INVALID_STATE_TRANSITION")
+    return _reassessment_decision(session, state, actor_type, user_id, now, reason)
+
+
+def mark_grant_changed(session: Session, user: UserPrincipal, now: datetime,
+                       agent_id: UUID) -> None:
+    """Called before a tool or resource grant is added. The approval was of what the agent could
+    do, so an added grant voids it (spec 5). An asset that is not approved is left alone, and
+    removing a grant never calls this.
+
+    The locks are taken here, before the grant row exists, so that a concurrent suspension
+    waits for this transaction and not the other way round.
+    """
+    agent = session.get(Agent, agent_id)
+    if agent is None:
+        raise NotFound()
+    state = lock_asset_state(session, agent.asset_id)
+    if state is None or state.status not in APPROVED_STATUSES:
+        return
+    _reassessment_decision(session, state, "user", user.id, now,
+                           "A grant was added to an agent of this asset.")
 
 
 def decision_references(session: Session,

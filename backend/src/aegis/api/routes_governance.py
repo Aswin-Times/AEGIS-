@@ -11,6 +11,7 @@ from aegis.api.dependencies import (
     LimitQuery,
     OffsetQuery,
     ReviewerDep,
+    SuspenderDep,
     UserDep,
 )
 from aegis.api.schemas import Page
@@ -19,10 +20,14 @@ from aegis.api.schemas_governance import (
     AssessmentCreatedOut,
     AssessmentOut,
     AssessmentSummaryOut,
+    AssetDecisionOut,
     AssetDetailOut,
     AssignIn,
     DecisionOut,
+    HistoryEntryOut,
     InventoryRowOut,
+    LifecycleDecisionOut,
+    LifecycleIn,
     MethodologyIn,
     MethodologyOut,
     OverviewOut,
@@ -32,6 +37,7 @@ from aegis.api.schemas_governance import (
     PolicyVersionIn,
     PolicyVersionOut,
     ProfileVersionOut,
+    ProfileVersionSummaryOut,
     RejectIn,
     RequestInformationIn,
     ReviewOut,
@@ -50,11 +56,14 @@ from aegis.governance.approvals import (
     list_reviews,
     reject,
     request_information,
+    require_reassessment,
+    retire,
     submit,
+    suspend,
 )
 from aegis.governance.assets import load_state, save_profile
 from aegis.governance.engine.lifecycle import GovernanceStatus
-from aegis.governance.inventory import asset_detail, list_inventory, overview
+from aegis.governance.inventory import asset_detail, asset_history, list_inventory, overview
 from aegis.governance.policies import (
     activate_version,
     approve_version,
@@ -455,3 +464,93 @@ def approvals_reject(id: UUID, body: RejectIn, user: GovernanceReviewerDep,
     with container.db.tenant_transaction(user.tenant_id) as session:
         decision = reject(session, user, container.clock(), id, reason=body.reason)
         return _decision_out(session, decision)
+
+
+# Suspension, reassessment, and retirement
+
+
+def _asset_decision_out(session, decision: GovernanceDecision) -> AssetDecisionOut:
+    policy_versions, evidence = decision_references(session, decision)
+    return AssetDecisionOut(
+        id=decision.id,
+        asset_id=decision.asset_id,
+        review_id=decision.review_id,
+        kind=decision.kind,
+        from_status=decision.from_status,
+        to_status=decision.to_status,
+        actor_type=decision.actor_type,
+        decided_by=decision.decided_by,
+        decided_at=decision.decided_at,
+        reason=decision.reason,
+        assessment_id=decision.assessment_id,
+        conditions=(None if decision.conditions_canonical is None
+                    else json.loads(decision.conditions_canonical)),
+        conditions_hash=decision.conditions_hash,
+        valid_until=decision.valid_until,
+        next_review_at=decision.next_review_at,
+        audit_event_id=decision.audit_event_id,
+        policy_version_ids=policy_versions,
+        evidence_ids=evidence,
+    )
+
+
+def _lifecycle_out(session, decision: GovernanceDecision) -> LifecycleDecisionOut:
+    return LifecycleDecisionOut(
+        **_asset_decision_out(session, decision).model_dump(),
+        governance_status=load_state(session, decision.asset_id).status,
+    )
+
+
+@router.post("/assets/{id}/suspend", response_model=LifecycleDecisionOut, status_code=201)
+def asset_suspend(id: UUID, body: LifecycleIn, user: SuspenderDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = suspend(session, user, container.clock(), id, reason=body.reason)
+        return _lifecycle_out(session, decision)
+
+
+@router.post("/assets/{id}/revoke", response_model=LifecycleDecisionOut, status_code=201)
+def asset_revoke(id: UUID, body: LifecycleIn, user: SuspenderDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = suspend(session, user, container.clock(), id, reason=body.reason,
+                           kind="REVOKE")
+        return _lifecycle_out(session, decision)
+
+
+@router.post("/assets/{id}/reassess", response_model=LifecycleDecisionOut, status_code=201)
+def asset_reassess(id: UUID, body: LifecycleIn, user: SuspenderDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = require_reassessment(session, "user", user.id, container.clock(), id,
+                                        reason=body.reason)
+        return _lifecycle_out(session, decision)
+
+
+@router.post("/assets/{id}/retire", response_model=LifecycleDecisionOut, status_code=201)
+def asset_retire(id: UUID, body: LifecycleIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = retire(session, user, container.clock(), id, reason=body.reason)
+        return _lifecycle_out(session, decision)
+
+
+@router.get("/assets/{id}/history", response_model=Page[HistoryEntryOut])
+def asset_history_list(id: UUID, user: UserDep, container: ContainerDep,
+                       limit: LimitQuery = 50, offset: OffsetQuery = 0):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        entries, total = asset_history(session, id, limit=limit, offset=offset)
+        items = []
+        for entry in entries:
+            common = {"type": entry.type, "seq": entry.seq,
+                      "audit_event_id": entry.audit_event_id, "kind": None, "decision": None,
+                      "assessment": None, "profile_version": None}
+            if entry.type == "decision":
+                common.update(id=entry.record.id, kind=entry.record.kind,
+                              decision=_asset_decision_out(session, entry.record))
+            elif entry.type == "assessment":
+                common.update(id=entry.record.assessment.id,
+                              assessment=AssessmentSummaryOut(**_summary_fields(entry.record)))
+            else:
+                version = entry.record
+                common.update(id=version.id, profile_version=ProfileVersionSummaryOut(
+                    id=version.id, version=version.version, content_hash=version.content_hash,
+                    created_by=version.created_by, created_at=version.created_at))
+            items.append(HistoryEntryOut(**common))
+        return Page[HistoryEntryOut](items=items, total=total, limit=limit, offset=offset)
