@@ -90,6 +90,7 @@ classification, or a server-assigned code.
 | `grant.changed` | `grant.*` | `medium` |
 | `credential.changed` | `credential.*` | `low` |
 | `correlation.rule_changed` | new | `medium` |
+| `governance.status_changed` | `governance.decision` whose `from_status` differs from `to_status`. The reason code is the decision kind prefixed with `GOVERNANCE_`, and `attributes.status` is the new status | `medium` for `SUSPEND`, `REVOKE`, and `REJECT`; otherwise `info` |
 
 `incident.*` and `investigation.*` audit events are **not** projected, so an incident can never
 feed correlation and cause a loop.

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, replace
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
@@ -71,6 +71,7 @@ class TenantWorld:
         self.id = tenant_id
         self.slug = slug
         self._tokens: dict[str, str] = {}
+        self._named: dict[str, tuple[str, dict[str, str]]] = {}
         self._counter = 0
 
     def _unique(self, prefix: str) -> str:
@@ -88,6 +89,38 @@ class TenantWorld:
             assert response.status_code == 200, response.text
             self._tokens[role] = response.json()["access_token"]
         return bearer(self._tokens[role])
+
+    def login_as(self, name: str, role: str) -> dict[str, str]:
+        """An additional, distinct user, for tests that need a second admin or reviewer."""
+        if name not in self._named:
+            email = f"{name}@{self.slug}.example.test"
+            create_user(self.urls.owner, self.id, email=email, password=PASSWORD, role=role)
+            response = self.client.post(
+                "/api/v1/auth/login",
+                json={"tenant_slug": self.slug, "email": email, "password": PASSWORD},
+            )
+            assert response.status_code == 200, response.text
+            self._named[name] = (role, bearer(response.json()["access_token"]))
+        return self._named[name][1]
+
+    def _headers_for(self, who: str) -> dict[str, str]:
+        return self._named[who][1] if who in self._named else self.login(who)
+
+    def user_id(self, role: str) -> str:
+        """The id of the user logged in as a role, or as a name given to login_as."""
+        response = self.client.get("/api/v1/auth/me", headers=self._headers_for(role))
+        assert response.status_code == 200, response.text
+        return response.json()["id"]
+
+    def grant_governance(self, role: str, by: str = "admin") -> dict[str, Any]:
+        """Give the governance_reviewer role to the user logged in as `role`, granted by `by`."""
+        response = self.post(
+            "/governance/role-grants",
+            {"user_id": self.user_id(role)},
+            headers=self._headers_for(by),
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
 
     @property
     def admin(self) -> dict[str, str]:
@@ -206,3 +239,29 @@ class TenantWorld:
         response = self.post("/audit/verify")
         assert response.status_code == 200, response.text
         return response.json()
+
+
+def insert_decision(connection, tenant_id, asset_id, *, kind="SUSPEND", from_status="DRAFT",
+                    to_status="SUSPENDED", review_id=None, decided_by=None) -> UUID:
+    """A real decision row, written as the database owner, for tests that need one to point at.
+
+    It names the tenant's first audit event, because a decision must reference a real one.
+    """
+    audit_event_id = connection.execute(
+        "SELECT id FROM audit_events WHERE tenant_id = %s ORDER BY seq LIMIT 1", (tenant_id,)
+    ).fetchone()[0]
+    if decided_by is None:
+        decided_by = connection.execute(
+            "SELECT id FROM users WHERE tenant_id = %s ORDER BY email LIMIT 1", (tenant_id,)
+        ).fetchone()[0]
+    decision_id = uuid4()
+    connection.execute(
+        """
+        INSERT INTO governance_decisions (id, tenant_id, asset_id, review_id, kind, from_status,
+            to_status, actor_type, decided_by, decided_at, reason, audit_event_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'user', %s, now(), 'synthetic test decision', %s)
+        """,
+        (decision_id, tenant_id, asset_id, review_id, kind, from_status, to_status, decided_by,
+         audit_event_id),
+    )
+    return decision_id

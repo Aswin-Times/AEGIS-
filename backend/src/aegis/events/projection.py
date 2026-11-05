@@ -221,6 +221,24 @@ def _rule_changed(session: Session, audit: AuditEvent) -> dict[str, Any]:
     }
 
 
+_MEDIUM_GOVERNANCE_DECISIONS = {"SUSPEND", "REVOKE", "REJECT"}
+
+
+def _governance_decision(session: Session, audit: AuditEvent) -> dict[str, Any] | None:
+    """Only a decision that changed the asset's status is a security event."""
+    payload = audit.payload
+    if payload.get("from_status") == payload.get("to_status"):
+        return None
+    kind = payload["kind"]
+    return {
+        "event_type": "governance.status_changed",
+        "severity": "medium" if kind in _MEDIUM_GOVERNANCE_DECISIONS else "info",
+        "reason_code": f"GOVERNANCE_{kind}",
+        "asset_id": _as_uuid(payload.get("asset_id")),
+        "attributes": {"status": payload["to_status"]},
+    }
+
+
 # incident.* and investigation.* are deliberately absent, so incidents cannot feed correlation.
 _BUILDERS: dict[str, Callable[[Session, AuditEvent], dict[str, Any] | None]] = {
     "action.decision": _decision,
@@ -245,6 +263,7 @@ _BUILDERS: dict[str, Callable[[Session, AuditEvent], dict[str, Any] | None]] = {
     "credential.issued": _credential("CREDENTIAL_ISSUED"),
     "credential.revoked": _credential("CREDENTIAL_REVOKED"),
     "correlation.rule_version_created": _rule_changed,
+    "governance.decision": _governance_decision,
 }
 
 PROJECTED_AUDIT_TYPES = frozenset(_BUILDERS)
@@ -255,6 +274,8 @@ def build_record(session: Session, audit: AuditEvent) -> SecurityEventRecord | N
     fields = builder(session, audit) if builder else None
     if fields is None:
         return None
+    # Most events reach their asset through an agent. A builder that names the asset says so.
+    asset_id = fields.pop("asset_id", None)
     agent_id = fields.get("agent_id")
     agent = session.get(Agent, agent_id) if agent_id else None
     return SecurityEventRecord(
@@ -264,7 +285,7 @@ def build_record(session: Session, audit: AuditEvent) -> SecurityEventRecord | N
         occurred_at=audit.occurred_at,
         actor_type=audit.actor_type,
         actor_id=audit.actor_id,
-        asset_id=agent.asset_id if agent else None,
+        asset_id=asset_id or (agent.asset_id if agent else None),
         source_audit_event_id=audit.id,
         source_event_hash=audit.event_hash,
         **fields,

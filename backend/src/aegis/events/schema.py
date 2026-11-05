@@ -33,6 +33,7 @@ EventType = Literal[
     "grant.changed",
     "credential.changed",
     "correlation.rule_changed",
+    "governance.status_changed",
 ]
 Severity = Literal["info", "low", "medium", "high", "critical"]
 ActorType = Literal["user", "agent", "system", "anonymous"]

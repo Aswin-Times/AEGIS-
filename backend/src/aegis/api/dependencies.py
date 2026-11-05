@@ -10,6 +10,7 @@ from aegis.db.session import Database
 from aegis.errors import Forbidden, Unauthenticated
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry
+from aegis.governance.roles import holds_reviewer
 from aegis.llm.adapter import LlmProvider
 from aegis.security import authentication
 from aegis.security.principals import ADMIN, REVIEWER, AgentPrincipal, UserPrincipal
@@ -80,6 +81,27 @@ def _require_roles(*roles: str):
 
 AdminDep = Annotated[UserPrincipal, Depends(_require_roles(ADMIN))]
 ReviewerDep = Annotated[UserPrincipal, Depends(_require_roles(ADMIN, REVIEWER))]
+
+def _holds_governance_reviewer(user: UserPrincipal, container: Container) -> bool:
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return holds_reviewer(session, user.id)
+
+
+def require_governance_reviewer(user: UserDep, container: ContainerDep) -> UserPrincipal:
+    """The governance_reviewer grant, not the user role, decides who may make governance calls."""
+    if not _holds_governance_reviewer(user, container):
+        raise Forbidden()
+    return user
+
+
+def require_suspender(user: UserDep, container: ContainerDep) -> UserPrincipal:
+    if user.role != ADMIN and not _holds_governance_reviewer(user, container):
+        raise Forbidden()
+    return user
+
+
+GovernanceReviewerDep = Annotated[UserPrincipal, Depends(require_governance_reviewer)]
+SuspenderDep = Annotated[UserPrincipal, Depends(require_suspender)]
 
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]

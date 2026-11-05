@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException
 
 from aegis.api import (
     routes_events,
+    routes_governance,
     routes_incidents,
     routes_investigation,
     routes_registry,
@@ -26,6 +27,13 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
+from aegis.governance.approvals import (
+    AssessmentIntegrityError,
+    ProfileIntegrityError,
+    ReviewIntegrityError,
+)
+from aegis.governance.policies import PolicyIntegrityError
+from aegis.governance.risk import MethodologyIntegrityError
 from aegis.llm.factory import build_llm_provider
 from aegis.logging_config import configure_logging
 from aegis.security.access_events import record_access_failure
@@ -114,6 +122,43 @@ def _register_error_handlers(app: FastAPI) -> None:
         logger.error("a stored correlation rule failed its integrity check")
         return _error_response(
             request, 503, "RULE_INTEGRITY_FAILED", "A stored correlation rule cannot be trusted."
+        )
+
+    @app.exception_handler(MethodologyIntegrityError)
+    async def handle_methodology_integrity(request: Request, error: MethodologyIntegrityError):
+        logger.error("a stored risk methodology failed its integrity check")
+        return _error_response(
+            request, 503, "METHODOLOGY_INTEGRITY_FAILED",
+            "A stored risk methodology cannot be trusted.",
+        )
+
+    @app.exception_handler(PolicyIntegrityError)
+    async def handle_policy_integrity(request: Request, error: PolicyIntegrityError):
+        logger.error("a stored governance policy failed its integrity check")
+        return _error_response(
+            request, 503, "POLICY_INTEGRITY_FAILED", "A stored governance policy cannot be trusted."
+        )
+
+    @app.exception_handler(AssessmentIntegrityError)
+    async def handle_assessment_integrity(request: Request, error: AssessmentIntegrityError):
+        logger.error("a stored risk assessment failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "ASSESSMENT_INTEGRITY_FAILED",
+            "A stored risk assessment cannot be trusted.",
+        )
+
+    @app.exception_handler(ProfileIntegrityError)
+    async def handle_profile_integrity(request: Request, error: ProfileIntegrityError):
+        logger.error("a stored asset profile failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "PROFILE_INTEGRITY_FAILED", "A stored asset profile cannot be trusted."
+        )
+
+    @app.exception_handler(ReviewIntegrityError)
+    async def handle_review_integrity(request: Request, error: ReviewIntegrityError):
+        logger.error("a stored governance review failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "REVIEW_INTEGRITY_FAILED", "A stored governance review cannot be trusted."
         )
 
     @app.exception_handler(IntegrityError)
@@ -211,6 +256,7 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     app.include_router(routes_events.router, prefix="/api/v1")
     app.include_router(routes_incidents.router, prefix="/api/v1")
     app.include_router(routes_investigation.router, prefix="/api/v1")
+    app.include_router(routes_governance.router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=True)
     def healthz() -> dict[str, str]:

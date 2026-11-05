@@ -316,6 +316,188 @@ class FindingEvidence(Base):
     audit_event_id: Mapped[UUID | None]
 
 
+class GovernanceSettings(Base):
+    __tablename__ = "governance_settings"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    enforcement_mode: Mapped[str]
+    active_methodology_version_id: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernanceRoleGrant(Base):
+    __tablename__ = "governance_role_grants"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    user_id: Mapped[UUID]
+    role: Mapped[str]
+    granted_by: Mapped[UUID]
+    granted_at: Mapped[datetime]
+    revoked_by: Mapped[UUID | None]
+    revoked_at: Mapped[datetime | None]
+
+
+class AssetProfileVersion(Base):
+    __tablename__ = "asset_profile_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    version: Mapped[int]
+    profile_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    business_owner_id: Mapped[UUID | None]
+    technical_owner_id: Mapped[UUID | None]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class AssetGovernanceState(Base):
+    __tablename__ = "asset_governance_state"
+    tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(primary_key=True)
+    status: Mapped[str]
+    version: Mapped[int]
+    current_profile_version_id: Mapped[UUID | None]
+    latest_assessment_id: Mapped[UUID | None]
+    current_decision_id: Mapped[UUID | None]
+    hard_block_decision_id: Mapped[UUID | None]
+    valid_until: Mapped[datetime | None]
+    next_review_at: Mapped[datetime | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class RiskMethodologyVersion(Base):
+    __tablename__ = "risk_methodology_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    version: Mapped[int]
+    document_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    created_by: Mapped[UUID | None]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class RiskMethodologyEvent(Base):
+    __tablename__ = "risk_methodology_events"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    version_id: Mapped[UUID]
+    event: Mapped[str]
+    actor_id: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class RiskAssessment(Base):
+    __tablename__ = "risk_assessments"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    profile_version_id: Mapped[UUID]
+    methodology_version_id: Mapped[UUID]
+    input_canonical: Mapped[str] = mapped_column(Text)
+    input_hash: Mapped[str]
+    result_canonical: Mapped[str] = mapped_column(Text)
+    result_hash: Mapped[str]
+    status: Mapped[str]
+    score: Mapped[int | None]
+    risk_level: Mapped[str | None]
+    assessed_by: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernancePolicy(Base):
+    __tablename__ = "governance_policies"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    name: Mapped[str]
+    category: Mapped[str]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernancePolicyVersion(Base):
+    __tablename__ = "governance_policy_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    policy_id: Mapped[UUID]
+    version: Mapped[int]
+    document_canonical: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str]
+    effective_from: Mapped[datetime]
+    review_by: Mapped[datetime | None]
+    created_by: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernancePolicyEvent(Base):
+    __tablename__ = "governance_policy_events"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    policy_version_id: Mapped[UUID]
+    event: Mapped[str]
+    actor_id: Mapped[UUID]
+    audit_event_id: Mapped[UUID]
+    created_at: Mapped[datetime] = _created_at()
+
+
+class GovernanceReview(Base):
+    __tablename__ = "governance_reviews"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    assessment_id: Mapped[UUID]
+    profile_version_id: Mapped[UUID]
+    submitted_by: Mapped[UUID]
+    assigned_reviewer: Mapped[UUID | None]
+    required_controls_canonical: Mapped[str] = mapped_column(Text)
+    findings_canonical: Mapped[str] = mapped_column(Text)
+    required_approvers: Mapped[int]
+    frozen_hash: Mapped[str]
+    status: Mapped[str]
+    version: Mapped[int]
+    submitted_at: Mapped[datetime]
+    closed_at: Mapped[datetime | None]
+
+
+class GovernanceDecision(Base):
+    __tablename__ = "governance_decisions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    review_id: Mapped[UUID | None]
+    kind: Mapped[str]
+    from_status: Mapped[str]
+    to_status: Mapped[str]
+    actor_type: Mapped[str]
+    decided_by: Mapped[UUID | None]
+    decided_at: Mapped[datetime]
+    reason: Mapped[str] = mapped_column(Text)
+    assessment_id: Mapped[UUID | None]
+    conditions_canonical: Mapped[str | None] = mapped_column(Text)
+    conditions_hash: Mapped[str | None]
+    valid_until: Mapped[datetime | None]
+    next_review_at: Mapped[datetime | None]
+    audit_event_id: Mapped[UUID]
+
+
+class GovernanceDecisionPolicyVersion(Base):
+    __tablename__ = "governance_decision_policy_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    decision_id: Mapped[UUID]
+    policy_version_id: Mapped[UUID]
+
+
+class GovernanceDecisionEvidence(Base):
+    __tablename__ = "governance_decision_evidence"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    decision_id: Mapped[UUID]
+    evidence_id: Mapped[UUID]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)
