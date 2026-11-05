@@ -15,11 +15,13 @@ from aegis.api.dependencies import (
 )
 from aegis.api.schemas import Page
 from aegis.api.schemas_governance import (
+    ApproveIn,
     AssessmentCreatedOut,
     AssessmentOut,
     AssessmentSummaryOut,
     AssetDetailOut,
     AssignIn,
+    DecisionOut,
     InventoryRowOut,
     MethodologyIn,
     MethodologyOut,
@@ -30,6 +32,7 @@ from aegis.api.schemas_governance import (
     PolicyVersionIn,
     PolicyVersionOut,
     ProfileVersionOut,
+    RejectIn,
     RequestInformationIn,
     ReviewOut,
     RiskOut,
@@ -37,12 +40,15 @@ from aegis.api.schemas_governance import (
     RoleGrantOut,
     SubmitIn,
 )
-from aegis.db.models import GovernanceReview
+from aegis.db.models import GovernanceDecision, GovernanceReview
 from aegis.governance.approvals import (
     ReviewStatus,
+    approve,
     assign_reviewer,
+    decision_references,
     get_review,
     list_reviews,
+    reject,
     request_information,
     submit,
 )
@@ -402,3 +408,50 @@ def approvals_request_information(id: UUID, body: RequestInformationIn,
         return _review_out(
             request_information(session, user, container.clock(), id, reason=body.reason)
         )
+
+
+def _decision_out(session, decision: GovernanceDecision) -> DecisionOut:
+    policy_versions, evidence = decision_references(session, decision)
+    review = session.get(GovernanceReview, decision.review_id)
+    return DecisionOut(
+        id=decision.id,
+        asset_id=decision.asset_id,
+        review_id=decision.review_id,
+        kind=decision.kind,
+        from_status=decision.from_status,
+        to_status=decision.to_status,
+        decided_by=decision.decided_by,
+        decided_at=decision.decided_at,
+        reason=decision.reason,
+        assessment_id=decision.assessment_id,
+        conditions=(None if decision.conditions_canonical is None
+                    else json.loads(decision.conditions_canonical)),
+        conditions_hash=decision.conditions_hash,
+        valid_until=decision.valid_until,
+        next_review_at=decision.next_review_at,
+        audit_event_id=decision.audit_event_id,
+        policy_version_ids=policy_versions,
+        evidence_ids=evidence,
+        review_status=review.status,
+        governance_status=load_state(session, decision.asset_id).status,
+    )
+
+
+@router.post("/approvals/{id}/approve", response_model=DecisionOut, status_code=201)
+def approvals_approve(id: UUID, body: ApproveIn, user: GovernanceReviewerDep,
+                      container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = approve(
+            session, container.tools, user, container.clock(), id, reason=body.reason,
+            valid_until=body.valid_until, next_review_at=body.next_review_at,
+            conditions=body.conditions, evidence_ids=body.evidence_ids,
+        )
+        return _decision_out(session, decision)
+
+
+@router.post("/approvals/{id}/reject", response_model=DecisionOut, status_code=201)
+def approvals_reject(id: UUID, body: RejectIn, user: GovernanceReviewerDep,
+                     container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        decision = reject(session, user, container.clock(), id, reason=body.reason)
+        return _decision_out(session, decision)

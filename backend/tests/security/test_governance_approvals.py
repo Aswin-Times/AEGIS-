@@ -636,10 +636,10 @@ def test_submit_records_the_policy_versions_it_was_judged_against(tenant, attack
     assert rows == [(UUID(version_id),)]
 
 
-def _decision_values(attacker_sql, tenant, **overrides):
+def _decision_values(attacker_sql, tenant, asset_id=None, review=None, **overrides):
     """A legal APPROVE decision, with overrides, as one INSERT's parameters."""
-    asset_id = assessed_asset(tenant)
-    review = submitted(tenant, asset_id)
+    asset_id = asset_id or assessed_asset(tenant)
+    review = review or submitted(tenant, asset_id)
     base = {
         "id": uuid4(),
         "tenant_id": tenant.id,
@@ -1108,3 +1108,616 @@ def test_record_decision_stores_conditions_policy_versions_and_evidence(tenant, 
         "SELECT evidence_id FROM governance_decision_evidence WHERE decision_id = %s",
         (decision_id,),
     ).fetchall() == [(evidence_id,)]
+
+
+# Approving and rejecting
+
+
+def window(valid_days=365, review_days=180) -> dict:
+    now = datetime.now(UTC)
+    return {"valid_until": (now + timedelta(days=valid_days)).isoformat(),
+            "next_review_at": (now + timedelta(days=review_days)).isoformat()}
+
+
+def approve(tenant, review_id, headers, reason="Controls are adequate.", conditions=None,
+            **overrides):
+    body = {"reason": reason, **window(), **overrides}
+    if conditions is not None:
+        body["conditions"] = conditions
+    return tenant.post(f"{APPROVALS}/{review_id}/approve", body, headers=headers)
+
+
+def reject(tenant, review_id, headers, reason="The risks are not mitigated."):
+    return tenant.post(f"{APPROVALS}/{review_id}/reject", {"reason": reason}, headers=headers)
+
+
+def another_holder(tenant, name):
+    """A further admin holding governance_reviewer, granted by the second admin."""
+    headers = tenant.login_as(name, "admin")
+    tenant.grant_governance(name, by="second-admin")
+    return headers
+
+
+def decision_row(attacker_sql, decision_id):
+    return attacker_sql.execute(
+        "SELECT kind, from_status, to_status, actor_type, decided_by, decided_at, reason, "
+        "assessment_id, conditions_canonical, conditions_hash, valid_until, next_review_at, "
+        "audit_event_id, review_id FROM governance_decisions WHERE id = %s", (decision_id,)
+    ).fetchone()
+
+
+def full_state(attacker_sql, asset_id):
+    return attacker_sql.execute(
+        "SELECT status, version, current_decision_id, hard_block_decision_id, valid_until, "
+        "next_review_at FROM asset_governance_state WHERE asset_id = %s", (asset_id,)
+    ).fetchone()
+
+
+def review_status_of(attacker_sql, review_id):
+    return attacker_sql.execute(
+        "SELECT status FROM governance_reviews WHERE id = %s", (review_id,)).fetchone()[0]
+
+
+def status_reasons(tenant):
+    """Reason codes of the status-change events, oldest first (the API lists newest first)."""
+    return [item["reason_code"] for item in reversed(status_events(tenant))]
+
+
+def assert_review_untouched(tenant, attacker_sql, review, assigned=False):
+    """Nothing was decided: the review open, the asset still under review, no new decision."""
+    kinds = ["SUBMIT", "ASSIGN_REVIEWER"] if assigned else ["SUBMIT"]
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == kinds
+    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_approval_stores_full_decision_record(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    version_id = activate_policy(tenant)
+    review = submitted(tenant)
+    response = approve(tenant, review["id"], holder, reason="Meets every control asked for.")
+    assert response.status_code == 201, response.text
+    body = response.json()
+    reviewer_id = tenant.user_id("second-admin")
+
+    assert (body["kind"], body["from_status"], body["to_status"]) == (
+        "APPROVE", "UNDER_REVIEW", "APPROVED")
+    assert body["decided_by"] == reviewer_id and body["review_id"] == review["id"]
+    assert body["assessment_id"] == review["assessment_id"]
+    assert body["conditions"] is None and body["conditions_hash"] is None
+    assert body["policy_version_ids"] == [version_id] and body["evidence_ids"] == []
+    assert (body["review_status"], body["governance_status"]) == ("DECIDED", "APPROVED")
+
+    row = decision_row(attacker_sql, body["id"])
+    assert row[:5] == ("APPROVE", "UNDER_REVIEW", "APPROVED", "user", UUID(reviewer_id))
+    assert row[5] is not None and row[6] == "Meets every control asked for."
+    assert str(row[7]) == review["assessment_id"] and row[8] is None and row[9] is None
+    assert row[10] == datetime.fromisoformat(body["valid_until"])
+    assert row[11] == datetime.fromisoformat(body["next_review_at"]) and row[11] < row[10]
+    assert str(row[13]) == review["id"]
+    assert attacker_sql.execute(
+        "SELECT policy_version_id FROM governance_decision_policy_versions "
+        "WHERE decision_id = %s", (body["id"],)).fetchall() == [(UUID(version_id),)]
+    assert attacker_sql.execute(
+        "SELECT count(*) FROM governance_decision_evidence WHERE decision_id = %s",
+        (body["id"],)).fetchone()[0] == 0
+
+    # The audit event names the decision and the reviewer, and the state row points at it.
+    (event,) = [item for item in tenant.audit_events("governance.decision")
+                if item["subject_id"] == body["id"]]
+    assert str(row[12]) == event["id"] and event["actor_id"] == reviewer_id
+    assert event["payload"]["kind"] == "APPROVE" and event["payload"]["to_status"] == "APPROVED"
+    status, _, current, blocked, valid_until, next_review = full_state(
+        attacker_sql, review["asset_id"])
+    assert (status, str(current), blocked) == ("APPROVED", body["id"], None)
+    assert (valid_until, next_review) == (row[10], row[11])
+    closed = review_of(tenant, review["id"])
+    assert closed["status"] == "DECIDED" and closed["closed_at"] is not None
+    assert closed["version"] == review["version"] + 1
+    assert status_reasons(tenant) == ["GOVERNANCE_SUBMIT", "GOVERNANCE_APPROVE"]
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_conditional_approval_sets_conditionally_approved(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    conditions = {"denied_tools": ["send_message", "calculate"], "hold_all": False,
+                  "max_resource_classification": "internal",
+                  "advisory_conditions": ["Review the logs weekly."]}
+    response = approve(tenant, review["id"], holder, conditions=conditions)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert (body["kind"], body["to_status"], body["governance_status"]) == (
+        "APPROVE_CONDITIONAL", "CONDITIONALLY_APPROVED", "CONDITIONALLY_APPROVED")
+    # Stored as canonical JSON, normalized, with a hash over exactly that text.
+    canonical, stored_hash = decision_row(attacker_sql, body["id"])[8:10]
+    stored = json.loads(canonical)
+    assert stored["denied_tools"] == ["calculate", "send_message"]
+    assert stored["max_resource_classification"] == "internal"
+    assert stored["advisory_conditions"] == ["Review the logs weekly."]
+    assert canonical == json.dumps(stored, sort_keys=True, separators=(",", ":"))
+    assert stored_hash == sha256_hex(canonical) == body["conditions_hash"]
+    assert body["conditions"] == stored
+    assert full_state(attacker_sql, review["asset_id"])[0] == "CONDITIONALLY_APPROVED"
+    counted = tenant.get("/governance/overview").json()
+    assert (counted["conditionally_approved"], counted["awaiting_approval"]) == (1, 0)
+    assert status_reasons(tenant)[-1] == "GOVERNANCE_APPROVE_CONDITIONAL"
+
+
+def test_advisory_only_conditions_are_still_conditional(tenant):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    response = approve(tenant, review["id"], holder,
+                       conditions={"advisory_conditions": ["Report incidents to the owner."]})
+    assert response.status_code == 201, response.text
+    assert response.json()["kind"] == "APPROVE_CONDITIONAL"
+
+
+def test_conditional_approval_needs_conditions(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    empty = [{}, {"denied_tools": [], "held_tools": [], "advisory_conditions": []},
+             {"hold_all": False}, {"max_resource_classification": None}]
+    for conditions in empty:
+        refused = approve(tenant, review["id"], holder, conditions=conditions)
+        assert refused.status_code == 422, conditions
+    for conditions in ({"unknown": 1}, {"hold_all": "yes"}, {"denied_tools": "send_message"},
+                       {"advisory_conditions": [""]}, [], "none"):
+        assert approve(tenant, review["id"], holder, conditions=conditions
+                       ).status_code == 422, conditions
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        {"denied_tools": ["no_such_tool"]},
+        {"held_tools": ["no_such_tool"]},
+        {"denied_actions": ["no_such_action"]},
+        {"denied_tools": ["send_message"], "held_tools": ["send_message"]},
+        {"max_resource_classification": "top_secret"},
+    ],
+    ids=["unknown_denied_tool", "unknown_held_tool", "unknown_action", "denied_and_held",
+         "unknown_classification"],
+)
+def test_condition_with_unknown_tool_rejected(tenant, attacker_sql, conditions):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    refused = approve(tenant, review["id"], holder, conditions=conditions)
+    assert refused.status_code == 422, refused.text
+    assert_review_untouched(tenant, attacker_sql, review)
+    # The control: a catalog tool is accepted.
+    assert approve(tenant, review["id"], holder, conditions={"held_tools": ["calculate"]}
+                   ).status_code == 201
+
+
+@pytest.mark.parametrize(
+    "dates",
+    [
+        lambda: window(valid_days=-1, review_days=-2),
+        lambda: window(valid_days=0, review_days=-1),
+        lambda: window(valid_days=30, review_days=31),
+        lambda: window(valid_days=30, review_days=-1),
+        lambda: window(valid_days=30, review_days=0),
+    ],
+    ids=["valid_until_past", "valid_until_now", "next_review_after_valid_until",
+         "next_review_past", "next_review_now"],
+)
+def test_bad_dates_rejected_with_no_state_change(tenant, attacker_sql, dates):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    refused = approve(tenant, review["id"], holder, **dates())
+    assert refused.status_code == 422, refused.text
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+def test_next_review_may_equal_valid_until(tenant):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    when = window(valid_days=30)["valid_until"]
+    assert approve(tenant, review["id"], holder, valid_until=when, next_review_at=when
+                   ).status_code == 201
+
+
+@pytest.mark.parametrize("field", ["valid_until", "next_review_at"])
+def test_naive_datetime_rejected(tenant, attacker_sql, field):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    naive = (datetime.now(UTC) + timedelta(days=30)).replace(tzinfo=None).isoformat()
+    refused = approve(tenant, review["id"], holder, **{field: naive})
+    assert refused.status_code == 422, refused.text
+    for missing in ("valid_until", "next_review_at"):
+        body = {"reason": "ok", **window()}
+        del body[missing]
+        assert tenant.post(f"{APPROVALS}/{review['id']}/approve", body, headers=holder
+                           ).status_code == 422
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+def test_service_refuses_naive_datetimes_itself(db, tenant, attacker_sql):
+    from aegis.errors import ValidationFailed
+    from aegis.gateway.tools import default_registry
+    from aegis.governance.approvals import approve as approve_service
+    from aegis.security.principals import UserPrincipal
+
+    reviewers(tenant)
+    review = submitted(tenant)
+    reviewer = UserPrincipal(UUID(tenant.user_id("second-admin")), tenant.id, "x", "admin")
+    now = datetime.now(UTC)
+    naive = (now + timedelta(days=30)).replace(tzinfo=None)
+    with pytest.raises(ValidationFailed), db.tenant_transaction(tenant.id) as session:
+        approve_service(session, default_registry(), reviewer, now, UUID(review["id"]),
+                        reason="ok", valid_until=naive, next_review_at=naive)
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+def test_invalid_lifecycle_transitions_refused(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder).status_code == 201
+    count = len(decisions_of(attacker_sql, review["asset_id"]))
+    for response in (approve(tenant, review["id"], holder), reject(tenant, review["id"], holder)):
+        assert (response.status_code, error_code(response)) == (409, "INVALID_STATE_TRANSITION")
+    assert len(decisions_of(attacker_sql, review["asset_id"])) == count
+    assert detail_status(tenant, review["asset_id"]) == "APPROVED"
+
+    # An open review whose asset is not under review cannot be decided either.
+    other = submitted(tenant)
+    force(attacker_sql, "UPDATE asset_governance_state SET status = 'DRAFT' WHERE asset_id = %s",
+          (other["asset_id"],))
+    for response in (approve(tenant, other["id"], holder), reject(tenant, other["id"], holder)):
+        assert (response.status_code, error_code(response)) == (409, "INVALID_STATE_TRANSITION")
+    assert [row[0] for row in decisions_of(attacker_sql, other["asset_id"])] == ["SUBMIT"]
+
+    # Nor can a withdrawn one.
+    third = submitted(tenant)
+    force(attacker_sql,
+          "UPDATE governance_reviews SET status = 'WITHDRAWN', closed_at = now() WHERE id = %s",
+          (third["id"],))
+    for response in (approve(tenant, third["id"], holder), reject(tenant, third["id"], holder)):
+        assert (response.status_code, error_code(response)) == (409, "INVALID_STATE_TRANSITION")
+    assert approve(tenant, str(uuid4()), holder).status_code == 404
+    assert reject(tenant, str(uuid4()), holder).status_code == 404
+
+
+def test_decision_requires_a_reason(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    for reason in (None, "", "   ", "x" * 2001):
+        body = {"reason": reason} if reason is not None else {}
+        assert tenant.post(f"{APPROVALS}/{review['id']}/reject", body, headers=holder
+                           ).status_code == 422, reason
+        assert approve(tenant, review["id"], holder, reason=reason).status_code == 422, reason
+    extra = {"reason": "ok", "status": "REJECTED"}
+    assert tenant.post(f"{APPROVALS}/{review['id']}/reject", extra, headers=holder
+                       ).status_code == 422
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+def test_evidence_is_not_accepted_before_the_register_exists(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    refused = approve(tenant, review["id"], holder, evidence_ids=[str(uuid4())])
+    assert refused.status_code == 422, refused.text
+    assert_review_untouched(tenant, attacker_sql, review)
+    assert approve(tenant, review["id"], holder, evidence_ids=[]).status_code == 201
+
+
+def test_two_approvers_required_when_policy_says_so(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert review["required_approvers"] == 2
+
+    first = approve(tenant, review["id"], holder, reason="First look is fine.")
+    assert first.status_code == 201, first.text
+    vote = first.json()
+    assert (vote["kind"], vote["from_status"], vote["to_status"]) == (
+        "APPROVAL_VOTE", "UNDER_REVIEW", "UNDER_REVIEW")
+    assert (vote["review_status"], vote["governance_status"]) == ("OPEN", "UNDER_REVIEW")
+    assert vote["valid_until"] is None and vote["next_review_at"] is None
+    submit_decision = decisions_of(attacker_sql, review["asset_id"])[0][5]
+    assert full_state(attacker_sql, review["asset_id"])[2:] == (submit_decision, None, None, None)
+    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
+    assert status_reasons(tenant) == ["GOVERNANCE_SUBMIT"]
+
+    second = approve(tenant, review["id"], third, reason="Second look agrees.")
+    assert second.status_code == 201, second.text
+    final = second.json()
+    assert (final["kind"], final["governance_status"], final["review_status"]) == (
+        "APPROVE", "APPROVED", "DECIDED")
+    kinds = [row[0] for row in decisions_of(attacker_sql, review["asset_id"])]
+    assert kinds == ["SUBMIT", "APPROVAL_VOTE", "APPROVE"]
+    state = full_state(attacker_sql, review["asset_id"])
+    assert str(state[2]) == final["id"] and state[4] is not None
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_a_rejection_does_not_wait_for_every_approver(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder).json()["kind"] == "APPROVAL_VOTE"
+    rejected = reject(tenant, review["id"], third)
+    assert rejected.status_code == 201, rejected.text
+    assert detail_status(tenant, review["asset_id"]) == "REJECTED"
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE", "REJECT"]
+
+
+def test_votes_validate_their_conditions_and_dates(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder, conditions={"denied_tools": ["nope"]}
+                   ).status_code == 422
+    assert approve(tenant, review["id"], holder, **window(valid_days=-1, review_days=-2)
+                   ).status_code == 422
+    assert_review_untouched(tenant, attacker_sql, review)
+
+
+def test_final_approval_applies_its_own_conditions_not_the_votes(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    vote = approve(tenant, review["id"], holder, conditions={"hold_all": True}).json()
+    assert vote["kind"] == "APPROVAL_VOTE" and vote["conditions"]["hold_all"] is True
+    assert full_state(attacker_sql, review["asset_id"])[0] == "UNDER_REVIEW"
+
+    final = approve(tenant, review["id"], third, conditions={"denied_tools": ["send_message"]})
+    assert final.status_code == 201, final.text
+    body = final.json()
+    assert (body["kind"], body["governance_status"]) == (
+        "APPROVE_CONDITIONAL", "CONDITIONALLY_APPROVED")
+    assert body["conditions"]["denied_tools"] == ["send_message"]
+    assert body["conditions"]["hold_all"] is False
+
+
+def test_a_second_approver_cannot_silently_drop_the_conditions(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder, conditions={"hold_all": True}
+                   ).status_code == 201
+    dropped = approve(tenant, review["id"], third)
+    assert (dropped.status_code, error_code(dropped)) == (409, "CONDITIONS_MISMATCH")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE"]
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    # The second approver can still approve with conditions of their own.
+    assert approve(tenant, review["id"], third, conditions={"hold_all": True}).status_code == 201
+
+
+def test_same_person_cannot_vote_twice(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder).status_code == 201
+    again = approve(tenant, review["id"], holder)
+    assert (again.status_code, error_code(again)) == (409, "ALREADY_VOTED")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE"]
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    # Below the service, the index refuses the same person as a vote or as an approval.
+    reviewer_id = tenant.user_id("second-admin")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        insert_decision(attacker_sql, tenant.id, review["asset_id"], kind="APPROVAL_VOTE",
+                        from_status="UNDER_REVIEW", to_status="UNDER_REVIEW",
+                        review_id=review["id"], decided_by=reviewer_id)
+    final = _decision_values(attacker_sql, tenant, asset_id=review["asset_id"], review=review,
+                             decided_by=reviewer_id)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _insert(attacker_sql, final)
+
+
+def test_concurrent_approvals_produce_one_outcome(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    review = submitted(tenant)
+    barrier = threading.Barrier(2)
+
+    def run(action, headers):
+        barrier.wait(timeout=30)
+        return action(tenant, review["id"], headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, approve, holder), pool.submit(run, reject, third)]
+        results = [future.result(timeout=60) for future in futures]
+    codes = sorted(response.status_code for response in results)
+    assert codes == [201, 409], [response.text for response in results]
+    loser = next(response for response in results if response.status_code == 409)
+    assert error_code(loser) == "INVALID_STATE_TRANSITION"
+
+    winner = next(response for response in results if response.status_code == 201).json()
+    kinds = [row[0] for row in decisions_of(attacker_sql, review["asset_id"])]
+    assert kinds == ["SUBMIT", winner["kind"]]
+    status, _, current, blocked, _, _ = full_state(attacker_sql, review["asset_id"])
+    assert str(current) == winner["id"]
+    assert (status, blocked is not None) == (
+        ("APPROVED", False) if winner["kind"] == "APPROVE" else ("REJECTED", True))
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_concurrent_votes_by_one_person_count_once(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    barrier = threading.Barrier(2)
+
+    def run():
+        barrier.wait(timeout=30)
+        return approve(tenant, review["id"], holder).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = sorted(future.result(timeout=60) for future in [pool.submit(run),
+                                                                pool.submit(run)])
+    assert codes == [201, 409]
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE"]
+
+
+@pytest.mark.parametrize("action", [approve, reject], ids=["approve", "reject"])
+def test_decisions_lock_agents_before_state(urls, tenant, attacker_sql, action):
+    """Spec 11.4: agent rows, then state, then the review, then the chain head."""
+    holder = reviewers(tenant)
+    agent = tenant.agent(tools=["calculate"])
+    asset_id = tenant.get(f"/agents/{agent.id}").json()["asset_id"]
+    save_profile(tenant, asset_id)
+    assess(tenant, asset_id)
+    review = submitted(tenant, asset_id)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with psycopg.connect(urls.superuser, autocommit=True) as observer:
+            with attacker_sql.transaction():
+                attacker_sql.execute(
+                    "SELECT id FROM agents WHERE asset_id = %s FOR UPDATE", (asset_id,)
+                )
+                response = pool.submit(action, tenant, review["id"], holder)
+                waiting = 0
+                deadline = time.monotonic() + 15
+                while not waiting and time.monotonic() < deadline:
+                    waiting = observer.execute(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' AND query LIKE '%FROM agents%' "
+                        "AND pid <> pg_backend_pid()"
+                    ).fetchone()[0]
+                    time.sleep(0.05)
+                assert waiting, "the decision did not block on the agent rows"
+                # Neither the state row nor the review has been locked yet.
+                with observer.transaction():
+                    observer.execute(
+                        "SELECT 1 FROM asset_governance_state WHERE asset_id = %s "
+                        "FOR UPDATE NOWAIT", (asset_id,))
+                    observer.execute(
+                        "SELECT 1 FROM governance_reviews WHERE id = %s FOR UPDATE NOWAIT",
+                        (review["id"],))
+                assert not response.done()
+        assert response.result(timeout=30).status_code == 201
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_rejection_sets_hard_block(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    # A prior approval's dates must not survive a rejection.
+    force(attacker_sql,
+          "UPDATE asset_governance_state SET valid_until = now() + interval '30 days', "
+          "next_review_at = now() + interval '10 days' WHERE asset_id = %s",
+          (review["asset_id"],))
+    response = reject(tenant, review["id"], holder, reason="Unmitigated data exposure.")
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert (body["kind"], body["from_status"], body["to_status"]) == (
+        "REJECT", "UNDER_REVIEW", "REJECTED")
+    assert body["valid_until"] is None and body["next_review_at"] is None
+    assert body["conditions"] is None and body["decided_by"] == tenant.user_id("second-admin")
+    assert (body["review_status"], body["governance_status"]) == ("DECIDED", "REJECTED")
+
+    status, _, current, blocked, valid_until, next_review = full_state(
+        attacker_sql, review["asset_id"])
+    assert status == "REJECTED"
+    assert str(current) == str(blocked) == body["id"]
+    assert (valid_until, next_review) == (None, None)
+    closed = review_of(tenant, review["id"])
+    assert closed["status"] == "DECIDED" and closed["closed_at"] is not None
+    row = decision_row(attacker_sql, body["id"])
+    assert str(row[7]) == review["assessment_id"] and row[6] == "Unmitigated data exposure."
+    event = status_events(tenant)[0]
+    assert (event["reason_code"], event["severity"]) == ("GOVERNANCE_REJECT", "medium")
+    assert tenant.verify_audit()["valid"] is True
+
+
+def test_approval_clears_the_hard_block(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    blocker = insert_decision(attacker_sql, tenant.id, review["asset_id"], kind="SUSPEND",
+                              from_status="DRAFT", to_status="SUSPENDED")
+    force(attacker_sql,
+          "UPDATE asset_governance_state SET hard_block_decision_id = %s WHERE asset_id = %s",
+          (blocker, review["asset_id"]))
+    assert full_state(attacker_sql, review["asset_id"])[3] == blocker
+    response = approve(tenant, review["id"], holder)
+    assert response.status_code == 201, response.text
+    assert full_state(attacker_sql, review["asset_id"])[3] is None
+
+
+def test_votes_leave_the_hard_block_alone(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    blocker = insert_decision(attacker_sql, tenant.id, review["asset_id"], kind="SUSPEND",
+                              from_status="DRAFT", to_status="SUSPENDED")
+    force(attacker_sql,
+          "UPDATE asset_governance_state SET hard_block_decision_id = %s WHERE asset_id = %s",
+          (blocker, review["asset_id"]))
+    assert approve(tenant, review["id"], holder).json()["kind"] == "APPROVAL_VOTE"
+    assert full_state(attacker_sql, review["asset_id"])[3] == blocker
+
+
+def test_failed_audit_rolls_back_the_decision(tenant, attacker_sql, monkeypatch):
+    from aegis.governance import approvals
+
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic audit outage")
+
+    monkeypatch.setattr(approvals, "append_event", fail)
+    results = [approve(tenant, review["id"], holder), reject(tenant, review["id"], holder)]
+    monkeypatch.undo()
+
+    assert [response.status_code for response in results] == [500, 500]
+    assert_review_untouched(tenant, attacker_sql, review)
+    # Nothing was left half done, so the same person can still act.
+    assert approve(tenant, review["id"], holder).status_code == 201
+
+
+# A review that does not match the audit chain is refused for a decision
+
+
+def test_repointed_audit_event_is_refused_by_a_decision(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    other = attacker_sql.execute(
+        "SELECT id FROM audit_events WHERE tenant_id = %s ORDER BY seq LIMIT 1", (tenant.id,)
+    ).fetchone()[0]
+    force(attacker_sql,
+          "UPDATE governance_decisions SET audit_event_id = %s WHERE review_id = %s "
+          "AND kind = 'SUBMIT'", (other, review["id"]))
+    for response in (approve(tenant, review["id"], holder), reject(tenant, review["id"], holder)):
+        assert (response.status_code, error_code(response)) == (503, "REVIEW_INTEGRITY_FAILED")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == ["SUBMIT"]
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+
+
+def test_second_submit_row_is_refused_by_a_decision(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    insert_decision(attacker_sql, tenant.id, review["asset_id"], kind="SUBMIT",
+                    from_status="ASSESSMENT_REQUIRED", to_status="UNDER_REVIEW",
+                    review_id=review["id"])
+    for response in (approve(tenant, review["id"], holder), reject(tenant, review["id"], holder)):
+        assert (response.status_code, error_code(response)) == (503, "REVIEW_INTEGRITY_FAILED")
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
+
+
+def test_tampered_profile_risk_factor_fails_submit_as_a_profile_error(tenant, attacker_sql):
+    asset_id = assessed_asset(tenant)
+    before = state_of(attacker_sql, asset_id)
+    force(attacker_sql,
+          "UPDATE asset_profile_versions SET profile_canonical = replace(profile_canonical, "
+          "'\"impact_level\":\"negligible\"', '\"impact_level\":\"severe\"') "
+          "WHERE asset_id = %s", (asset_id,))
+    refused = submit(tenant, asset_id)
+    assert (refused.status_code, error_code(refused)) == (503, "PROFILE_INTEGRITY_FAILED")
+    assert decisions_of(attacker_sql, asset_id) == []
+    assert state_of(attacker_sql, asset_id) == before

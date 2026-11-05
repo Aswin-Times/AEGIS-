@@ -8,7 +8,7 @@ on them and a database edit to them would otherwise change who may approve.
 """
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -21,6 +21,7 @@ from aegis.audit.chain import append_event, compute_event_hash
 from aegis.canonical import canonical_json, sha256_hex
 from aegis.db.models import (
     AiAsset,
+    AssetGovernanceState,
     AssetProfileVersion,
     AuditEvent,
     GovernanceDecision,
@@ -38,6 +39,7 @@ from aegis.governance.assets import (
     touch,
     transition,
 )
+from aegis.governance.conditions import Conditions, is_enforceable, validate_against_catalog
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.engine.policies import PolicyOutcome, evaluate_policies
 from aegis.governance.policies import applicable_documents
@@ -268,6 +270,17 @@ def _not_current() -> Conflict:
                     code="ASSESSMENT_NOT_CURRENT")
 
 
+def _verified_profile(version: AssetProfileVersion) -> AssetProfile:
+    if sha256_hex(version.profile_canonical) != version.content_hash:
+        raise ProfileIntegrityError(f"profile version {version.id} failed its hash")
+    profile = AssetProfile.model_validate(json.loads(version.profile_canonical))
+    # The owner columns are not covered by the hash, and separation of duties reads them.
+    if (profile.business_owner_id, profile.technical_owner_id) != (
+            version.business_owner_id, version.technical_owner_id):
+        raise ProfileIntegrityError(f"profile version {version.id} owners do not match")
+    return profile
+
+
 def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: datetime,
            asset_id: UUID, *, reason: str) -> GovernanceReview:
     """Open a review, or replace one that is waiting for information.
@@ -298,18 +311,20 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
     assessment = record.assessment if record is not None else None
     if assessment is None:
         raise _not_current()
-    # What is frozen below comes from these rows, so they must be what was written.
+    # What is frozen below comes from these rows, so they must be what was written. The profile is
+    # checked before the input hash, which reads it: an edited risk factor is tampering, not a
+    # reason to assess again.
     if not recomputes_to_stored_result(session, assessment):
         raise AssessmentIntegrityError(f"risk assessment {assessment.id} does not recompute")
+    profile_version = session.get(AssetProfileVersion, state.current_profile_version_id)
+    if profile_version is None:
+        raise _not_current()
+    profile = _verified_profile(profile_version)
     if (assessment.status != "COMPLETE"
             or assessment.profile_version_id != state.current_profile_version_id
             or assessment.input_hash != current_input_hash(session, registry, asset_id)):
         raise _not_current()
 
-    profile_version = session.get(AssetProfileVersion, state.current_profile_version_id)
-    if sha256_hex(profile_version.profile_canonical) != profile_version.content_hash:
-        raise ProfileIntegrityError(f"profile version {profile_version.id} failed its hash")
-    profile = AssetProfile.model_validate(json.loads(profile_version.profile_canonical))
     # Verified evidence arrives with the evidence register.
     outcome = evaluate_policies(applicable_documents(session, now), profile,
                                 assessment.risk_level, set())
@@ -368,7 +383,10 @@ def _locked_review(session: Session, review_id: UUID) -> GovernanceReview:
     # Lock order is agents, state, review, chain head. A caller that changes the asset's status
     # must already hold the agent and state locks before calling this.
     review = session.execute(
-        select(GovernanceReview).where(GovernanceReview.id == review_id).with_for_update()
+        select(GovernanceReview)
+        .where(GovernanceReview.id == review_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if review is None:
         raise NotFound()
@@ -440,6 +458,189 @@ def request_information(session: Session, user: UserPrincipal, now: datetime, re
         assessment_id=review.assessment_id,
     )
     return review
+
+
+# Deciding
+
+
+def _frozen_controls(review: GovernanceReview) -> dict[str, Any]:
+    return json.loads(review.required_controls_canonical)
+
+
+def _owner_ids(session: Session, review: GovernanceReview) -> set[UUID]:
+    version = session.get(AssetProfileVersion, review.profile_version_id)
+    if version is None:
+        raise ProfileIntegrityError(f"profile version {review.profile_version_id} is missing")
+    profile = _verified_profile(version)
+    return {owner for owner in (profile.business_owner_id, profile.technical_owner_id)
+            if owner is not None}
+
+
+def _require_authority(session: Session, user: UserPrincipal, review: GovernanceReview) -> None:
+    """Spec 7.5, in order. The route checks the grant too, but this is the check that counts:
+    it runs under the review lock, at the moment of the decision."""
+    if not holds_reviewer(session, user.id):
+        raise Forbidden()
+    if review.assigned_reviewer is not None and review.assigned_reviewer != user.id:
+        raise Forbidden("Only the assigned reviewer can do this.", code="NOT_ASSIGNED_REVIEWER")
+    # Silence refuses: only a frozen outcome that says so permits these.
+    controls = _frozen_controls(review)
+    if user.id == review.submitted_by and controls.get("self_approval_permitted") is not True:
+        raise Forbidden("You cannot decide a review you submitted unless a policy permits it.",
+                        code="SELF_APPROVAL_REFUSED")
+    if (user.id in _owner_ids(session, review)
+            and controls.get("owner_approval_permitted") is not True):
+        raise Forbidden("You cannot decide a review of an asset you own unless a policy "
+                        "permits it.", code="SELF_APPROVAL_REFUSED")
+
+
+def _lock_for_decision(session: Session, user: UserPrincipal,
+                       review_id: UUID) -> tuple[GovernanceReview, AssetGovernanceState]:
+    """Locks in the order of spec 11.4, then checks who may decide and whether it is open."""
+    # Read as a column, so that no stale review is loaded before the locks are held.
+    asset_id = session.execute(
+        select(GovernanceReview.asset_id).where(GovernanceReview.id == review_id)
+    ).scalar_one_or_none()
+    if asset_id is None:
+        raise NotFound()
+    lock_asset_agents(session, asset_id)
+    state = load_state_for_update(session, asset_id)
+    review = _locked_review(session, review_id)
+    _require_authority(session, user, review)
+    if (review.status not in OPEN_STATUSES or state is None
+            or state.status != GovernanceStatus.UNDER_REVIEW):
+        raise Conflict("This review is closed or its asset is not under review.",
+                       code="INVALID_STATE_TRANSITION")
+    return review, state
+
+
+def _close(session: Session, review: GovernanceReview, now: datetime) -> None:
+    review.status = ReviewStatus.DECIDED.value
+    review.version += 1
+    review.closed_at = now
+    session.flush()
+
+
+def _frozen_policy_versions(review: GovernanceReview) -> list[UUID]:
+    return [UUID(item) for item in _frozen_controls(review)["applicable_version_ids"]]
+
+
+def _require_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValidationFailed(f"{name} must include a time zone.")
+
+
+def _require_dates(now: datetime, valid_until: datetime, next_review_at: datetime) -> None:
+    _require_aware(valid_until, "valid_until")
+    _require_aware(next_review_at, "next_review_at")
+    if valid_until <= now:
+        raise ValidationFailed("valid_until must be in the future.")
+    if not now < next_review_at <= valid_until:
+        raise ValidationFailed("next_review_at must be in the future and not after valid_until.")
+
+
+def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: datetime,
+            review_id: UUID, *, reason: str, valid_until: datetime, next_review_at: datetime,
+            conditions: Conditions | None = None,
+            evidence_ids: Sequence[UUID] = ()) -> GovernanceDecision:
+    """Record one approval. Short of the required number it is a vote; the last one decides.
+
+    Conditions on a vote are checked and stored but not applied: the final approval's conditions
+    are the ones that take effect, and it cannot drop conditions an earlier approver asked for.
+    """
+    review, state = _lock_for_decision(session, user, review_id)
+    if evidence_ids:
+        # The evidence register arrives later; until then a reference could mean nothing.
+        raise ValidationFailed("Evidence cannot be referenced until the evidence register exists.")
+    _require_dates(now, valid_until, next_review_at)
+    if conditions is not None:
+        if not is_enforceable(conditions) and not conditions.advisory_conditions:
+            raise ValidationFailed("Conditions were given but contain nothing.")
+        validate_against_catalog(conditions, registry)
+    document = None if conditions is None else conditions.model_dump(mode="json")
+
+    votes = session.execute(
+        select(GovernanceDecision).where(
+            GovernanceDecision.review_id == review.id,
+            GovernanceDecision.kind == DecisionKind.APPROVAL_VOTE,
+        )
+    ).scalars().all()
+    if any(vote.decided_by == user.id for vote in votes):
+        raise Conflict("You have already voted on this review.", code="ALREADY_VOTED")
+    final = len(votes) + 1 >= review.required_approvers
+    if final and conditions is None and any(vote.conditions_canonical for vote in votes):
+        raise Conflict("An earlier approver set conditions, so the final approval must too.",
+                       code="CONDITIONS_MISMATCH")
+
+    common = {
+        "asset_id": review.asset_id,
+        "from_status": state.status,
+        "actor_type": "user",
+        "decided_by": user.id,
+        "now": now,
+        "reason": reason,
+        "review_id": review.id,
+        "assessment_id": review.assessment_id,
+        "conditions": document,
+        "policy_version_ids": _frozen_policy_versions(review),
+        "evidence_ids": evidence_ids,
+    }
+    if not final:
+        return record_decision(session, kind=DecisionKind.APPROVAL_VOTE,
+                               to_status=state.status, **common)
+
+    target = (GovernanceStatus.CONDITIONALLY_APPROVED if conditions is not None
+              else GovernanceStatus.APPROVED)
+    _close(session, review, now)
+    decision = record_decision(
+        session,
+        kind=(DecisionKind.APPROVE_CONDITIONAL if conditions is not None
+              else DecisionKind.APPROVE),
+        to_status=target, valid_until=valid_until, next_review_at=next_review_at, **common,
+    )
+    transition(session, state, target, now, current_decision_id=decision.id,
+               hard_block_decision_id=None, valid_until=valid_until,
+               next_review_at=next_review_at)
+    return decision
+
+
+def reject(session: Session, user: UserPrincipal, now: datetime, review_id: UUID, *,
+           reason: str) -> GovernanceDecision:
+    """One rejection decides the review, whatever votes came before, and blocks the asset."""
+    review, state = _lock_for_decision(session, user, review_id)
+    _close(session, review, now)
+    decision = record_decision(
+        session,
+        asset_id=review.asset_id,
+        kind=DecisionKind.REJECT,
+        from_status=state.status,
+        to_status=GovernanceStatus.REJECTED,
+        actor_type="user",
+        decided_by=user.id,
+        now=now,
+        reason=reason,
+        review_id=review.id,
+        assessment_id=review.assessment_id,
+        policy_version_ids=_frozen_policy_versions(review),
+    )
+    # The block outlasts every later status until an approval, and no earlier approval survives.
+    transition(session, state, GovernanceStatus.REJECTED, now, current_decision_id=decision.id,
+               hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)
+    return decision
+
+
+def decision_references(session: Session,
+                        decision: GovernanceDecision) -> tuple[list[UUID], list[UUID]]:
+    """The policy versions and evidence a decision names, in a stable order."""
+    versions = session.execute(
+        select(GovernanceDecisionPolicyVersion.policy_version_id)
+        .where(GovernanceDecisionPolicyVersion.decision_id == decision.id)
+    ).scalars().all()
+    evidence = session.execute(
+        select(GovernanceDecisionEvidence.evidence_id)
+        .where(GovernanceDecisionEvidence.decision_id == decision.id)
+    ).scalars().all()
+    return sorted(versions, key=str), sorted(evidence, key=str)
 
 
 # Reading
