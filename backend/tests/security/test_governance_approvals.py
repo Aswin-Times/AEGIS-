@@ -1664,7 +1664,7 @@ def test_vote_of_revoked_holder_does_not_count(tenant, attacker_sql):
         "SUBMIT", "APPROVAL_VOTE", "APPROVAL_VOTE", "APPROVE"]
 
 
-def test_conditions_of_a_revoked_voter_do_not_bind_the_final_approval(tenant):
+def test_conditions_of_a_revoked_voter_still_bind_later_approvals(tenant, attacker_sql):
     holder = reviewers(tenant)
     third = another_holder(tenant, "third-admin")
     fourth = another_holder(tenant, "fourth-admin")
@@ -1673,8 +1673,80 @@ def test_conditions_of_a_revoked_voter_do_not_bind_the_final_approval(tenant):
     assert approve(tenant, review["id"], holder, conditions={"hold_all": True}
                    ).status_code == 201
     revoke_governance(tenant, "second-admin")
-    assert approve(tenant, review["id"], third).json()["kind"] == "APPROVAL_VOTE"
-    assert approve(tenant, review["id"], fourth).json()["kind"] == "APPROVE"
+
+    # B is refused at their vote, so nobody can carry on without the conditions.
+    for conditions in (None, {"denied_tools": ["send_message"]}):
+        refused = approve(tenant, review["id"], third, conditions=conditions)
+        assert (refused.status_code, error_code(refused)) == (409, "CONDITIONS_MISMATCH")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE"]
+
+    # B can vote with the same conditions, and then C completes it with them.
+    assert approve(tenant, review["id"], third, conditions={"hold_all": True}
+                   ).json()["kind"] == "APPROVAL_VOTE"
+    final = approve(tenant, review["id"], fourth, conditions={"hold_all": True})
+    assert final.status_code == 201, final.text
+    assert final.json()["kind"] == "APPROVE_CONDITIONAL"
+
+
+def test_revoked_voters_conditions_can_be_cleared_only_by_resubmitting(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    fourth = another_holder(tenant, "fourth-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder, conditions={"hold_all": True}
+                   ).status_code == 201
+    revoke_governance(tenant, "second-admin")
+    assert approve(tenant, review["id"], third).status_code == 409
+
+    # The sanctioned way out: ask for information and resubmit, which starts fresh votes.
+    assert request_information(tenant, review["id"], third).status_code == 200
+    again = submitted(tenant, review["asset_id"])
+    assert again["id"] != review["id"]
+    assert approve(tenant, again["id"], third).json()["kind"] == "APPROVAL_VOTE"
+    final = approve(tenant, again["id"], fourth)
+    assert final.status_code == 201, final.text
+    assert (final.json()["kind"], final.json()["governance_status"]) == ("APPROVE", "APPROVED")
+
+
+def test_conditions_bind_on_every_approval(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder, conditions={"hold_all": True}
+                   ).status_code == 201
+    # A(X) then B(Y) is refused at B, whether B's approval would be a vote or the last one.
+    refused = approve(tenant, review["id"], third, conditions={"denied_tools": ["send_message"]})
+    assert (refused.status_code, error_code(refused)) == (409, "CONDITIONS_MISMATCH")
+    assert approve(tenant, review["id"], third, conditions={"hold_all": True}
+                   ).json()["kind"] == "APPROVE_CONDITIONAL"
+
+
+def test_a_vote_made_before_the_assessment_went_stale_does_not_carry_over(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    agent = tenant.agent(tools=["calculate"])
+    asset_id = tenant.get(f"/agents/{agent.id}").json()["asset_id"]
+    save_profile(tenant, asset_id)
+    assess(tenant, asset_id)
+    review = submitted(tenant, asset_id)
+    assert approve(tenant, review["id"], holder).json()["kind"] == "APPROVAL_VOTE"
+    tenant.created(f"/agents/{agent.id}/tool-grants", {"tool": "send_message"})
+    stale = approve(tenant, review["id"], third)
+    assert (stale.status_code, error_code(stale)) == (409, "ASSESSMENT_NOT_CURRENT")
+
+    assert request_information(tenant, review["id"], holder).status_code == 200
+    assess(tenant, asset_id)
+    again = submitted(tenant, asset_id)
+    # A's earlier vote belongs to the withdrawn review, so A votes again and B's is the final one.
+    vote = approve(tenant, again["id"], holder)
+    assert (vote.status_code, vote.json()["kind"]) == (201, "APPROVAL_VOTE")
+    final = approve(tenant, again["id"], third)
+    assert final.status_code == 201, final.text
+    assert (final.json()["kind"], final.json()["governance_status"]) == ("APPROVE", "APPROVED")
 
 
 # The assessment must still describe the asset

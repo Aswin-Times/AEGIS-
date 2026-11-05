@@ -555,8 +555,10 @@ def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: 
     """Record one approval. Short of the required number it is a vote; the last one decides.
 
     Conditions on a vote are checked and stored but not applied. The final approval's conditions
-    are the ones that take effect: they must equal an earlier vote's, so nobody can weaken or drop
-    what another approver asked for, and may be added when no earlier vote set any.
+    are the ones that take effect. Every approval must carry the same conditions as any earlier
+    vote on the review, including a vote that no longer counts, so nobody can weaken or drop what
+    another approver asked for; conditions may be added when no earlier vote set any. A vote
+    counts toward the required number only while its voter still holds the reviewer role.
     """
     review, state = _lock_for_decision(session, user, review_id)
     if review.status == ReviewStatus.INFO_REQUESTED:
@@ -584,11 +586,13 @@ def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: 
     # A vote counts only while its voter could still decide, so a revoked or downgraded voter
     # cannot be the one that completes an approval.
     counted = [vote for vote in votes if holds_reviewer(session, vote.decided_by)]
-    final = len(counted) + 1 >= review.required_approvers
+    # Conditions bind on every approval, and against every vote on this review, counted or not:
+    # revoking an approver must not shed what they asked for.
     own_hash = None if document is None else sha256_hex(canonical_json(document))
-    if final and any(vote.conditions_hash not in (None, own_hash) for vote in counted):
-        raise Conflict("The final approval must carry exactly the conditions an earlier "
-                       "approver set.", code="CONDITIONS_MISMATCH")
+    if any(vote.conditions_hash not in (None, own_hash) for vote in votes):
+        raise Conflict("An earlier approver set conditions, and an approval must carry exactly "
+                       "those.", code="CONDITIONS_MISMATCH")
+    final = len(counted) + 1 >= review.required_approvers
 
     common = {
         "asset_id": review.asset_id,
