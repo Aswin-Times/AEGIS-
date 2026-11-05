@@ -27,7 +27,11 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
-from aegis.governance.approvals import ReviewIntegrityError
+from aegis.governance.approvals import (
+    AssessmentIntegrityError,
+    ProfileIntegrityError,
+    ReviewIntegrityError,
+)
 from aegis.governance.policies import PolicyIntegrityError
 from aegis.governance.risk import MethodologyIntegrityError
 from aegis.llm.factory import build_llm_provider
@@ -133,6 +137,21 @@ def _register_error_handlers(app: FastAPI) -> None:
         logger.error("a stored governance policy failed its integrity check")
         return _error_response(
             request, 503, "POLICY_INTEGRITY_FAILED", "A stored governance policy cannot be trusted."
+        )
+
+    @app.exception_handler(AssessmentIntegrityError)
+    async def handle_assessment_integrity(request: Request, error: AssessmentIntegrityError):
+        logger.error("a stored risk assessment failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "ASSESSMENT_INTEGRITY_FAILED",
+            "A stored risk assessment cannot be trusted.",
+        )
+
+    @app.exception_handler(ProfileIntegrityError)
+    async def handle_profile_integrity(request: Request, error: ProfileIntegrityError):
+        logger.error("a stored asset profile failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "PROFILE_INTEGRITY_FAILED", "A stored asset profile cannot be trusted."
         )
 
     @app.exception_handler(ReviewIntegrityError)

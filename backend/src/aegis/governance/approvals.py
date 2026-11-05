@@ -17,11 +17,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aegis.audit.chain import append_event
+from aegis.audit.chain import append_event, compute_event_hash
 from aegis.canonical import canonical_json, sha256_hex
 from aegis.db.models import (
     AiAsset,
     AssetProfileVersion,
+    AuditEvent,
     GovernanceDecision,
     GovernanceDecisionEvidence,
     GovernanceDecisionPolicyVersion,
@@ -41,7 +42,7 @@ from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.engine.policies import PolicyOutcome, evaluate_policies
 from aegis.governance.policies import applicable_documents
 from aegis.governance.profile import AssetProfile
-from aegis.governance.risk import current_input_hash, latest_assessment
+from aegis.governance.risk import current_input_hash, latest_assessment, recomputes_to_stored_result
 from aegis.governance.roles import holds_reviewer
 from aegis.security.principals import UserPrincipal
 
@@ -81,6 +82,14 @@ class ReviewIntegrityError(Exception):
     """
 
 
+class AssessmentIntegrityError(Exception):
+    """The latest assessment does not recompute to what was stored, so it cannot be frozen."""
+
+
+class ProfileIntegrityError(Exception):
+    """A stored profile version does not match its content hash."""
+
+
 # Decisions
 
 
@@ -102,8 +111,13 @@ def record_decision(
     next_review_at: datetime | None = None,
     policy_version_ids: Iterable[UUID] = (),
     evidence_ids: Iterable[UUID] = (),
+    payload_extra: dict[str, str] | None = None,
 ) -> GovernanceDecision:
-    """Append the audit event, then the decision. The caller then moves the state row to it."""
+    """Append the audit event, then the decision. The caller then moves the state row to it.
+
+    payload_extra adds string facts to the audit payload that the decision row does not carry:
+    the frozen hash of a submission, or the reviewer an assignment named.
+    """
     if (actor_type == "system") != (decided_by is None):
         raise ValueError("a decision has a user unless the system made it")
     asset = session.get(AiAsset, asset_id)
@@ -128,6 +142,7 @@ def record_decision(
             "from_status": str(from_status),
             "to_status": str(to_status),
             "assessment_id": None if assessment_id is None else str(assessment_id),
+            **(payload_extra or {}),
         },
     )
     decision = GovernanceDecision(
@@ -186,6 +201,27 @@ def _frozen_hash(review: GovernanceReview) -> str:
 def verify_review(review: GovernanceReview) -> GovernanceReview:
     if _frozen_hash(review) != review.frozen_hash:
         raise ReviewIntegrityError(f"governance review {review.id} failed its hash")
+    return review
+
+
+def verify_review_anchored(session: Session, review: GovernanceReview) -> GovernanceReview:
+    """verify_review, plus a check against the audit chain for a review read to make a decision.
+
+    The frozen hash is unkeyed, so someone who can edit rows could change a frozen value and
+    recompute it. The hash was also written into the audit payload of the review's own SUBMIT
+    decision, and that event is covered by the chain, so the stored hash must match it.
+    """
+    verify_review(review)
+    submits = session.execute(
+        select(GovernanceDecision).where(
+            GovernanceDecision.review_id == review.id, GovernanceDecision.kind == "SUBMIT"
+        )
+    ).scalars().all()
+    audit = session.get(AuditEvent, submits[0].audit_event_id) if len(submits) == 1 else None
+    if (audit is None or compute_event_hash(audit) != audit.event_hash
+            or audit.payload.get("decision_id") != str(submits[0].id)
+            or audit.payload.get("frozen_hash") != review.frozen_hash):
+        raise ReviewIntegrityError(f"governance review {review.id} does not match its audit event")
     return review
 
 
@@ -251,7 +287,7 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
         if (previous.status != ReviewStatus.INFO_REQUESTED or state is None
                 or state.status != GovernanceStatus.UNDER_REVIEW):
             raise Conflict("This asset already has a review open.", code="REVIEW_ALREADY_OPEN")
-        verify_review(previous)
+        verify_review_anchored(session, previous)
     elif state is None or state.status == GovernanceStatus.DRAFT:
         raise _not_current()
     elif state.status not in _SUBMITTABLE:
@@ -260,12 +296,19 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
 
     record = latest_assessment(session, asset_id)
     assessment = record.assessment if record is not None else None
-    if (assessment is None or assessment.status != "COMPLETE"
+    if assessment is None:
+        raise _not_current()
+    # What is frozen below comes from these rows, so they must be what was written.
+    if not recomputes_to_stored_result(session, assessment):
+        raise AssessmentIntegrityError(f"risk assessment {assessment.id} does not recompute")
+    if (assessment.status != "COMPLETE"
             or assessment.profile_version_id != state.current_profile_version_id
             or assessment.input_hash != current_input_hash(session, registry, asset_id)):
         raise _not_current()
 
     profile_version = session.get(AssetProfileVersion, state.current_profile_version_id)
+    if sha256_hex(profile_version.profile_canonical) != profile_version.content_hash:
+        raise ProfileIntegrityError(f"profile version {profile_version.id} failed its hash")
     profile = AssetProfile.model_validate(json.loads(profile_version.profile_canonical))
     # Verified evidence arrives with the evidence register.
     outcome = evaluate_policies(applicable_documents(session, now), profile,
@@ -308,6 +351,7 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
         review_id=review.id,
         assessment_id=assessment.id,
         policy_version_ids=outcome.applicable_version_ids,
+        payload_extra={"frozen_hash": review.frozen_hash},
     )
     if previous is not None:
         touch(session, state, now, current_decision_id=decision.id)
@@ -321,12 +365,14 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
 
 
 def _locked_review(session: Session, review_id: UUID) -> GovernanceReview:
+    # Lock order is agents, state, review, chain head. A caller that changes the asset's status
+    # must already hold the agent and state locks before calling this.
     review = session.execute(
         select(GovernanceReview).where(GovernanceReview.id == review_id).with_for_update()
     ).scalar_one_or_none()
     if review is None:
         raise NotFound()
-    return verify_review(review)
+    return verify_review_anchored(session, review)
 
 
 def _require_open(review: GovernanceReview) -> None:
@@ -358,9 +404,10 @@ def assign_reviewer(session: Session, user: UserPrincipal, now: datetime, review
         actor_type="user",
         decided_by=user.id,
         now=now,
-        reason="Reviewer assigned.",
+        reason=f"Reviewer assigned: {reviewer_id}.",
         review_id=review.id,
         assessment_id=review.assessment_id,
+        payload_extra={"reviewer_id": str(reviewer_id)},
     )
     return review
 
@@ -402,7 +449,7 @@ def get_review(session: Session, review_id: UUID) -> GovernanceReview:
     review = session.get(GovernanceReview, review_id)
     if review is None:
         raise NotFound()
-    return verify_review(review)
+    return verify_review_anchored(session, review)
 
 
 def list_reviews(session: Session, *, status: str | None, asset_id: UUID | None, limit: int,

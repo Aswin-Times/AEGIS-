@@ -5,6 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import psycopg
@@ -15,7 +16,7 @@ from sqlalchemy.exc import DBAPIError
 from aegis.canonical import sha256_hex
 from aegis.db.models import SecurityEvent
 from aegis.events.projection import reprojection_matches
-from aegis.governance.approvals import record_decision
+from aegis.governance.approvals import _frozen_hash, record_decision
 from support import insert_decision
 
 ASSETS = "/governance/assets"
@@ -401,6 +402,13 @@ def test_assigned_reviewer_must_hold_the_role(tenant, attacker_sql):
     rows = decisions_of(attacker_sql, review["asset_id"])
     assert [row[0] for row in rows] == ["SUBMIT", "ASSIGN_REVIEWER"]
     assert rows[1][1:4] == ("UNDER_REVIEW", "UNDER_REVIEW", UUID(review["id"]))
+    # The decision names who was assigned, in its reason and in its audit payload.
+    assert holder in rows[1][4]
+    payload = attacker_sql.execute(
+        "SELECT a.payload FROM governance_decisions d JOIN audit_events a "
+        "ON a.id = d.audit_event_id WHERE d.id = %s", (rows[1][5],)
+    ).fetchone()[0]
+    assert payload["reviewer_id"] == holder
 
     # Once the grant is revoked the user can no longer be assigned.
     tenant.grant_governance("plain-reviewer", by="admin")
@@ -733,6 +741,9 @@ def test_decision_links_to_a_real_audit_event(tenant, attacker_sql):
         "from_status": "ASSESSMENT_REQUIRED",
         "to_status": "UNDER_REVIEW",
         "assessment_id": review["assessment_id"],
+        "frozen_hash": attacker_sql.execute(
+            "SELECT frozen_hash FROM governance_reviews WHERE id = %s", (review["id"],)
+        ).fetchone()[0],
     }
     stored = attacker_sql.execute(
         "SELECT audit_event_id FROM governance_decisions WHERE id = %s", (decision[5],)
@@ -847,6 +858,86 @@ def test_tampered_info_requested_review_is_not_replaced_by_resubmission(tenant, 
     refused = submit(tenant, review["asset_id"])
     assert (refused.status_code, error_code(refused)) == (503, "REVIEW_INTEGRITY_FAILED")
     assert len(decisions_of(attacker_sql, review["asset_id"])) == 2
+
+
+HIGH_RISK = {**PROFILE, "data_categories": ["regulated"], "external_exposure": "public",
+             "autonomy_level": "autonomous", "human_oversight": "none", "impact_level": "severe",
+             "deployment_environment": "production_external", "third_party_reliance": "unvetted"}
+INCOMPLETE = {key: value for key, value in PROFILE.items() if key != "impact_level"}
+
+
+@pytest.mark.parametrize(
+    ("profile", "edit", "code"),
+    [
+        (HIGH_RISK, "UPDATE risk_assessments SET risk_level = 'LOW' WHERE asset_id = %s",
+         "ASSESSMENT_INTEGRITY_FAILED"),
+        (INCOMPLETE, "UPDATE risk_assessments SET status = 'COMPLETE', score = 0, "
+         "risk_level = 'LOW' WHERE asset_id = %s", "ASSESSMENT_INTEGRITY_FAILED"),
+        (PROFILE, "UPDATE asset_profile_versions SET profile_canonical = replace("
+         "profile_canonical, '\"asset_type\":\"ai_application\"', "
+         "'\"asset_type\":\"model\"') WHERE asset_id = %s", "PROFILE_INTEGRITY_FAILED"),
+    ],
+    ids=["risk_level_lowered", "incomplete_flipped_to_complete", "profile_asset_type_changed"],
+)
+def test_submit_fails_closed_on_an_edited_assessment_or_profile(tenant, attacker_sql, profile,
+                                                                 edit, code):
+    asset_id = assessed_asset(tenant, profile)
+    before = state_of(attacker_sql, asset_id)
+    force(attacker_sql, edit, (asset_id,))
+    refused = submit(tenant, asset_id)
+    assert (refused.status_code, error_code(refused)) == (503, code)
+    assert decisions_of(attacker_sql, asset_id) == []
+    assert state_of(attacker_sql, asset_id) == before
+    assert attacker_sql.execute(
+        "SELECT count(*) FROM governance_reviews WHERE asset_id = %s", (asset_id,)
+    ).fetchone()[0] == 0
+
+
+def test_submit_decision_carries_the_frozen_hash_in_its_audit_payload(tenant, attacker_sql):
+    review = submitted(tenant)
+    row = decisions_of(attacker_sql, review["asset_id"])[0]
+    payload = attacker_sql.execute(
+        "SELECT a.payload FROM governance_decisions d JOIN audit_events a "
+        "ON a.id = d.audit_event_id WHERE d.id = %s", (row[5],)
+    ).fetchone()[0]
+    stored = attacker_sql.execute(
+        "SELECT frozen_hash FROM governance_reviews WHERE id = %s", (review["id"],)
+    ).fetchone()[0]
+    assert payload["frozen_hash"] == stored
+
+
+@pytest.mark.parametrize("rewrite_audit", [False, True],
+                         ids=["hash_only", "hash_and_audit_payload"])
+def test_review_with_recomputed_hash_is_refused_for_a_decision(tenant, attacker_sql,
+                                                               rewrite_audit):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    mine = tenant.user_id("second-admin")
+    columns = ("id, tenant_id, asset_id, assessment_id, profile_version_id, submitted_by, "
+               "required_controls_canonical, findings_canonical, required_approvers")
+    values = attacker_sql.execute(
+        f"SELECT {columns} FROM governance_reviews WHERE id = %s", (review["id"],)
+    ).fetchone()
+    names = [name.strip() for name in columns.split(",")]
+    fields = dict(zip(names, values, strict=True))
+    controls = fields["required_controls_canonical"]
+    assert '"self_approval_permitted":false' in controls
+    fields["required_controls_canonical"] = controls.replace(
+        '"self_approval_permitted":false', '"self_approval_permitted":true')
+    new_hash = _frozen_hash(SimpleNamespace(**fields, frozen_hash=None))
+    force(attacker_sql, "UPDATE governance_reviews SET required_controls_canonical = %s, "
+          "frozen_hash = %s WHERE id = %s",
+          (fields["required_controls_canonical"], new_hash, review["id"]))
+    if rewrite_audit:
+        force(attacker_sql,
+              "UPDATE audit_events SET payload = jsonb_set(payload, '{frozen_hash}', "
+              "to_jsonb(%s::text)) WHERE id = (SELECT audit_event_id FROM governance_decisions "
+              "WHERE review_id = %s AND kind = 'SUBMIT')", (new_hash, review["id"]))
+
+    for response in (assign(tenant, review["id"], mine, holder),
+                     request_information(tenant, review["id"], holder)):
+        assert (response.status_code, error_code(response)) == (503, "REVIEW_INTEGRITY_FAILED")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == ["SUBMIT"]
 
 
 # Reading
