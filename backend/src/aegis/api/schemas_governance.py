@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import AwareDatetime, model_validator
+from pydantic import AwareDatetime, StringConstraints, model_validator
 
 from aegis.api.schemas import In, Out
 from aegis.governance.engine.risk import Methodology
@@ -188,3 +188,37 @@ class PolicyOut(Out):
     created_by: UUID
     created_at: datetime
     versions: list[PolicyVersionOut]
+
+
+Reason = Annotated[
+    str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=2000)
+]
+
+
+class SubmitIn(In):
+    reason: Reason
+
+
+class AssignIn(In):
+    reviewer_id: UUID
+
+
+class RequestInformationIn(In):
+    reason: Reason
+
+
+class ReviewOut(Out):
+    id: UUID
+    asset_id: UUID
+    assessment_id: UUID
+    profile_version_id: UUID
+    submitted_by: UUID
+    assigned_reviewer: UUID | None
+    required_approvers: int
+    status: str
+    version: int
+    submitted_at: datetime
+    closed_at: datetime | None
+    # What the policy engine asked for when the review was opened, frozen at that moment.
+    required_controls: dict[str, Any]
+    findings: list[dict[str, Any]]

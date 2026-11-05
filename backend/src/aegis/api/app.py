@@ -27,6 +27,7 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Forbidden, NotFound, ServiceUnavailable
 from aegis.events.limiter import FailureLimiter
 from aegis.gateway.tools import ToolRegistry, default_registry
+from aegis.governance.approvals import ReviewIntegrityError
 from aegis.governance.policies import PolicyIntegrityError
 from aegis.governance.risk import MethodologyIntegrityError
 from aegis.llm.factory import build_llm_provider
@@ -132,6 +133,13 @@ def _register_error_handlers(app: FastAPI) -> None:
         logger.error("a stored governance policy failed its integrity check")
         return _error_response(
             request, 503, "POLICY_INTEGRITY_FAILED", "A stored governance policy cannot be trusted."
+        )
+
+    @app.exception_handler(ReviewIntegrityError)
+    async def handle_review_integrity(request: Request, error: ReviewIntegrityError):
+        logger.error("a stored governance review failed its integrity check: %s", error)
+        return _error_response(
+            request, 503, "REVIEW_INTEGRITY_FAILED", "A stored governance review cannot be trusted."
         )
 
     @app.exception_handler(IntegrityError)

@@ -75,7 +75,7 @@ tenants 1--* users
 | Table | Key columns | Notes |
 |-------|-------------|-------|
 | `asset_profile_versions` | `asset_id`, `version`, `profile_canonical`, `content_hash`, `business_owner_id`, `technical_owner_id`, `created_by` | Immutable, with `UNIQUE (tenant_id, asset_id, version)`. The owner columns are composite foreign keys to `users`, so another tenant's user cannot be named. Rejects `UPDATE`, `DELETE`, and `TRUNCATE` |
-| `asset_governance_state` | Primary key `(tenant_id, asset_id)`. `status`, `version`, `current_profile_version_id`, `latest_assessment_id`, `current_decision_id`, `hard_block_decision_id`, `valid_until`, `next_review_at`, `updated_at` | No row means the asset is not governed, and the migration creates none. The profile pointer is a composite key that must name a version of the same asset. The assessment pointer is a composite foreign key `(tenant_id, asset_id, latest_assessment_id)` to `risk_assessments`, added in `0007`, so it can name only an assessment of the same asset. The decision pointers have no foreign key until their table exists. `aegis_governance_state_guard` is described below |
+| `asset_governance_state` | Primary key `(tenant_id, asset_id)`. `status`, `version`, `current_profile_version_id`, `latest_assessment_id`, `current_decision_id`, `hard_block_decision_id`, `valid_until`, `next_review_at`, `updated_at` | No row means the asset is not governed, and the migration creates none. The profile pointer is a composite key that must name a version of the same asset. The assessment pointer is a composite foreign key `(tenant_id, asset_id, latest_assessment_id)` to `risk_assessments`, added in `0007`, so it can name only an assessment of the same asset. The decision pointers are composite foreign keys `(tenant_id, asset_id, current_decision_id)` and `(tenant_id, asset_id, hard_block_decision_id)` to `governance_decisions`, added in `0009`, so a state row can name only a decision of its own asset. `aegis_governance_state_guard` is described below |
 
 ## Phase 3 tables (governance risk, migration `0007`)
 
@@ -95,9 +95,18 @@ These are separate from the runtime `policies` and `policy_versions`, which stay
 | `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | Append-only, with `UNIQUE (tenant_id, policy_id, version)`. `effective_from` is required and `review_by` optional, and `CHECK (review_by IS NULL OR review_by > effective_from)`. `content_hash` covers `policy_id`, `version`, `effective_from`, `review_by` (UTC, fixed-width), and the document, so editing the window or the numbering is detected as well as the document. It is checked at every load, and a mismatch fails closed |
 | `governance_policy_events` | `policy_version_id`, `event` (`APPROVED`, `ACTIVATED`, `DEACTIVATED`), `actor_id`, `audit_event_id` | Append-only. A partial unique index allows one `APPROVED` event per version. A version's activation status is its latest `ACTIVATED` or `DEACTIVATED` event by audit sequence, never by `created_at`. `aegis_policy_event_guard` is described below |
 
+## Phase 3 tables (governance reviews and decisions, migration `0009`)
+
+| Table | Purpose | Notes |
+|-------|---------|-------|
+| `governance_reviews` | `asset_id`, `assessment_id`, `profile_version_id`, `submitted_by`, `assigned_reviewer`, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `frozen_hash`, `status` (`OPEN`, `INFO_REQUESTED`, `DECIDED`, `WITHDRAWN`), `version`, `submitted_at`, `closed_at` | A partial unique index on `(tenant_id, asset_id)` where the status is `OPEN` or `INFO_REQUESTED` allows one open review per asset. `required_controls_canonical` holds the whole frozen policy outcome: applicable policy version IDs, required controls, `minimum_approvers`, `self_approval_permitted`, and `owner_approval_permitted`. `required_approvers` copies `minimum_approvers` and is `1` or `2`. `frozen_hash` covers the review's identity and the frozen text and is checked wherever the review is read, failing closed with `503 REVIEW_INTEGRITY_FAILED`. `closed_at` is set exactly when the status is `DECIDED` or `WITHDRAWN`. Composite keys tie the assessment and profile version to the same asset. `aegis_governance_review_guard` is described below |
+| `governance_decisions` | `asset_id`, `review_id`, `kind`, `from_status`, `to_status`, `actor_type` (`user`, `system`), `decided_by`, `decided_at`, `reason`, `assessment_id`, `conditions_canonical`, `conditions_hash`, `valid_until`, `next_review_at`, `audit_event_id` | Append-only. `UNIQUE (tenant_id, asset_id, id)` backs the state row's pointers. Composite keys tie the review and assessment to the same asset, and `audit_event_id` is required and must name a real audit event. Checks: `reason` is non-empty; a user is present exactly when the actor is `user`; the system actor is allowed only for `REQUIRE_REASSESSMENT`; `APPROVE` and `APPROVE_CONDITIONAL` need an assessment, `valid_until`, and `next_review_at`; `APPROVE_CONDITIONAL` needs non-empty conditions; conditions and their hash are both present or both absent. A partial unique index on `(tenant_id, review_id, decided_by)` for `APPROVAL_VOTE`, `APPROVE`, and `APPROVE_CONDITIONAL` keeps one person from counting twice on a review |
+| `governance_decision_policy_versions` | `decision_id`, `policy_version_id` | Append-only. The policy versions a decision was made against |
+| `governance_decision_evidence` | `decision_id`, `evidence_id` | Append-only. The foreign key to evidence is added with the evidence table |
+
 ## Deferred tables
 
-The remaining governance tables (reviews, decisions, evidence, compliance, and gateway checks) arrive with later migrations.
+The remaining governance tables (evidence, compliance, and gateway checks) arrive with later migrations.
 
 `users.role` is a single fixed role. A roles-and-permissions table has no use until
 custom roles are a requirement (`DECISIONS.md` D-009).
@@ -106,9 +115,10 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 
 | Trigger | Table | Rule |
 |---------|-------|------|
-| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `governance_policies`, `governance_policy_versions`, `governance_policy_events` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
+| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
 | `aegis_approval_transition` | `approvals` | Allows only: `PENDING -> APPROVED, REJECTED, CANCELLED`, and `APPROVED -> EXECUTED, CANCELLED`. Forbids changing binding columns (`request_id`, `action_hash`, `decision_id`). Forbids `DELETE` |
 | `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update that moves the status into `APPROVED` or `CONDITIONALLY_APPROVED`. A status-unchanged update cannot clear it. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
+| `aegis_governance_review_guard` | `governance_reviews` | The frozen columns (identity, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `frozen_hash`, `submitted_at`) cannot change. `version` must rise by exactly one. A `DECIDED` or `WITHDRAWN` review cannot change. Forbids `DELETE`. A statement-level `aegis_reject_mutation` trigger rejects `TRUNCATE` |
 | `aegis_policy_event_guard` | `governance_policy_events` | On insert, an `APPROVED` event cannot name the version's creator as actor, and an `ACTIVATED` event needs an existing `APPROVED` event for the version |
 
 ## Runtime grants (`aegis_app`)
@@ -120,8 +130,9 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT`, `UPDATE (seq, head_hash)` | `audit_chain_heads` |
 | `SELECT, INSERT`, `UPDATE (enforcement_mode, active_methodology_version_id)` | `governance_settings` |
 | `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` | `governance_role_grants` |
+| `SELECT, INSERT`, `UPDATE (assigned_reviewer, status, version, closed_at)` | `governance_reviews` |
 | `SELECT, INSERT`, `UPDATE (status, version, current_profile_version_id, latest_assessment_id, current_decision_id, hard_block_decision_id, valid_until, next_review_at, updated_at)` | `asset_governance_state` |
-| `SELECT, INSERT` only | `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
+| `SELECT, INSERT` only | `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
 | `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
 | `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |
 | `SELECT, INSERT`, `UPDATE (llm_status, llm_provider, llm_model, llm_rejected_count, llm_finished_at)` | `investigation_runs` |

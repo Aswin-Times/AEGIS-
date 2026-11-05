@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError
 
 from aegis.canonical import sha256_hex
 from aegis.errors import Conflict
+from aegis.governance.approvals import record_decision
 from aegis.governance.assets import (
     load_state,
     lock_asset_agents,
@@ -20,6 +21,7 @@ from aegis.governance.assets import (
 )
 from aegis.governance.engine.lifecycle import TRANSITIONS, GovernanceStatus
 from aegis.governance.profile import AssetProfile, canonical_profile
+from support import insert_decision
 
 FULL_PROFILE = {
     "asset_type": "autonomous_agent",
@@ -234,11 +236,11 @@ class _Rollback(Exception):
 def test_trigger_rejects_hard_block_clear_without_approval(db, tenant, attacker_sql):
     asset = tenant.asset()
     _save(tenant, asset["id"])
-    # Set up the blocked state directly. The decisions table does not exist yet.
+    # Set up the blocked state directly, naming a real decision.
     attacker_sql.execute(
         "UPDATE asset_governance_state SET hard_block_decision_id = %s, "
         "version = version + 1 WHERE asset_id = %s",
-        (uuid4(), asset["id"]),
+        (insert_decision(attacker_sql, tenant.id, asset["id"]), asset["id"]),
     )
     clear = "hard_block_decision_id = NULL"
     with pytest.raises(DBAPIError, match="hard block"):
@@ -270,7 +272,7 @@ def test_trigger_rejects_hard_block_clear_without_a_move_into_approval(db, tenan
     attacker_sql.execute(
         "UPDATE asset_governance_state SET hard_block_decision_id = %s, "
         "version = version + 1 WHERE asset_id = %s",
-        (uuid4(), asset["id"]),
+        (insert_decision(attacker_sql, tenant.id, asset["id"]), asset["id"]),
     )
     # The row is already APPROVED, so a status-unchanged update is not a move into approval.
     for extra in ("", ", status = 'APPROVED'"):
@@ -310,9 +312,10 @@ def test_trigger_rejects_delete_and_binding_change(db, tenant, attacker_sql):
         attacker_sql.execute("TRUNCATE asset_governance_state")
 
 
-def test_trigger_requires_version_increment(db, tenant):
+def test_trigger_requires_version_increment(db, tenant, attacker_sql):
     asset = tenant.asset()
     _save(tenant, asset["id"])
+    decision_id = insert_decision(attacker_sql, tenant.id, asset["id"])
     for version in ("version", "version + 2", "version - 1"):
         with pytest.raises(DBAPIError, match="version"):
             _as_app(
@@ -324,9 +327,9 @@ def test_trigger_requires_version_increment(db, tenant):
     # A status-unchanged update is allowed, and still has to advance the version.
     with pytest.raises(DBAPIError, match="version"):
         _as_app(db, tenant, "UPDATE asset_governance_state SET current_decision_id = :id",
-                id=uuid4())
+                id=decision_id)
     _as_app(db, tenant, "UPDATE asset_governance_state SET current_decision_id = :id, "
-            "version = version + 1", id=uuid4())
+            "version = version + 1", id=decision_id)
     assert _state(db, tenant, asset["id"])[:2] == ("DRAFT", 2)
 
 
@@ -400,7 +403,12 @@ def test_transition_service_checks_table_and_bumps_version(db, tenant):
         assert (state.status, state.version) == ("DRAFT", 1)
 
         transition(session, state, GovernanceStatus.ASSESSMENT_REQUIRED, now)
-        touch(session, state, now, current_decision_id=uuid4())
+        decision = record_decision(
+            session, asset_id=UUID(asset["id"]), kind="SUSPEND", from_status="DRAFT",
+            to_status="SUSPENDED", actor_type="user", decided_by=UUID(tenant.user_id("admin")),
+            now=now, reason="synthetic",
+        )
+        touch(session, state, now, current_decision_id=decision.id)
         with pytest.raises(ValueError):
             touch(session, state, now, asset_id=uuid4())
     assert _state(db, tenant, asset["id"])[:2] == ("ASSESSMENT_REQUIRED", 3)

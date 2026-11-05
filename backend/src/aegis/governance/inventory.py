@@ -20,6 +20,7 @@ from aegis.db.models import (
     User,
 )
 from aegis.errors import NotFound
+from aegis.governance.approvals import outstanding_findings
 from aegis.governance.engine.lifecycle import GovernanceStatus
 
 RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -263,7 +264,7 @@ def overview(session: Session, now: datetime) -> OverviewView:
         conditionally_approved=by_status.get(GovernanceStatus.CONDITIONALLY_APPROVED.value, 0),
         suspended=by_status.get(GovernanceStatus.SUSPENDED.value, 0),
         overdue_reviews=overdue,
-        outstanding_findings=0,  # Review findings arrive with the approval workflow.
+        outstanding_findings=outstanding_findings(session),
         evidence_verified=0,  # Evidence arrives with the evidence register.
         evidence_total=0,
         enforcement_mode=mode or DEFAULT_ENFORCEMENT_MODE,

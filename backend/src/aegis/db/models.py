@@ -442,6 +442,62 @@ class GovernancePolicyEvent(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class GovernanceReview(Base):
+    __tablename__ = "governance_reviews"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    assessment_id: Mapped[UUID]
+    profile_version_id: Mapped[UUID]
+    submitted_by: Mapped[UUID]
+    assigned_reviewer: Mapped[UUID | None]
+    required_controls_canonical: Mapped[str] = mapped_column(Text)
+    findings_canonical: Mapped[str] = mapped_column(Text)
+    required_approvers: Mapped[int]
+    frozen_hash: Mapped[str]
+    status: Mapped[str]
+    version: Mapped[int]
+    submitted_at: Mapped[datetime]
+    closed_at: Mapped[datetime | None]
+
+
+class GovernanceDecision(Base):
+    __tablename__ = "governance_decisions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    review_id: Mapped[UUID | None]
+    kind: Mapped[str]
+    from_status: Mapped[str]
+    to_status: Mapped[str]
+    actor_type: Mapped[str]
+    decided_by: Mapped[UUID | None]
+    decided_at: Mapped[datetime]
+    reason: Mapped[str] = mapped_column(Text)
+    assessment_id: Mapped[UUID | None]
+    conditions_canonical: Mapped[str | None] = mapped_column(Text)
+    conditions_hash: Mapped[str | None]
+    valid_until: Mapped[datetime | None]
+    next_review_at: Mapped[datetime | None]
+    audit_event_id: Mapped[UUID]
+
+
+class GovernanceDecisionPolicyVersion(Base):
+    __tablename__ = "governance_decision_policy_versions"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    decision_id: Mapped[UUID]
+    policy_version_id: Mapped[UUID]
+
+
+class GovernanceDecisionEvidence(Base):
+    __tablename__ = "governance_decision_evidence"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    decision_id: Mapped[UUID]
+    evidence_id: Mapped[UUID]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

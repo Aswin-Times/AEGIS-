@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, replace
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
@@ -239,3 +239,29 @@ class TenantWorld:
         response = self.post("/audit/verify")
         assert response.status_code == 200, response.text
         return response.json()
+
+
+def insert_decision(connection, tenant_id, asset_id, *, kind="SUSPEND", from_status="DRAFT",
+                    to_status="SUSPENDED", review_id=None, decided_by=None) -> UUID:
+    """A real decision row, written as the database owner, for tests that need one to point at.
+
+    It names the tenant's first audit event, because a decision must reference a real one.
+    """
+    audit_event_id = connection.execute(
+        "SELECT id FROM audit_events WHERE tenant_id = %s ORDER BY seq LIMIT 1", (tenant_id,)
+    ).fetchone()[0]
+    if decided_by is None:
+        decided_by = connection.execute(
+            "SELECT id FROM users WHERE tenant_id = %s ORDER BY email LIMIT 1", (tenant_id,)
+        ).fetchone()[0]
+    decision_id = uuid4()
+    connection.execute(
+        """
+        INSERT INTO governance_decisions (id, tenant_id, asset_id, review_id, kind, from_status,
+            to_status, actor_type, decided_by, decided_at, reason, audit_event_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'user', %s, now(), 'synthetic test decision', %s)
+        """,
+        (decision_id, tenant_id, asset_id, review_id, kind, from_status, to_status, decided_by,
+         audit_event_id),
+    )
+    return decision_id

@@ -286,6 +286,10 @@ EXPECTED_TABLE_PRIVILEGES = {
     "governance_policies": {"SELECT", "INSERT"},
     "governance_policy_versions": {"SELECT", "INSERT"},
     "governance_policy_events": {"SELECT", "INSERT"},
+    "governance_reviews": {"SELECT", "INSERT"},
+    "governance_decisions": {"SELECT", "INSERT"},
+    "governance_decision_policy_versions": {"SELECT", "INSERT"},
+    "governance_decision_evidence": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -325,6 +329,7 @@ EXPECTED_COLUMN_UPDATES = {
         "next_review_at",
         "updated_at",
     },
+    "governance_reviews": {"assigned_reviewer", "status", "version", "closed_at"},
 }
 
 

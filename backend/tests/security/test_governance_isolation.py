@@ -193,3 +193,67 @@ def test_cross_tenant_policy_access(world, db):
             {"id": uuid4(), "tenant": second.id, "policy": policy["id"],
              "creator": second.user_id("admin")},
         )
+
+
+def test_cross_tenant_approval_access(world, db):
+    first, second = world.tenant(), world.tenant()
+    second_admin = first.login_as("second-admin", "admin")
+    first.grant_governance("admin", by="second-admin")
+    first.grant_governance("second-admin", by="admin")
+    second.grant_governance("reviewer")
+    outsider = second.user_id("reviewer")
+
+    asset = first.asset()["id"]
+    profile = {"asset_type": "ai_application", "data_categories": ["internal"],
+               "external_exposure": "none", "autonomy_level": "advisory",
+               "declared_tool_access": [], "human_oversight": "in_the_loop",
+               "impact_level": "negligible", "deployment_environment": "development",
+               "third_party_reliance": "none"}
+    assert first.post(f"/governance/assets/{asset}/profile", profile).status_code == 201
+    assert first.post(f"/governance/assets/{asset}/assess").status_code == 201
+
+    # The other tenant cannot submit the asset, and nothing is written on either side.
+    assert second.post(f"/governance/assets/{asset}/submit", {"reason": "mine now"}
+                       ).status_code == 404
+    assert second.audit_events("governance.decision") == []
+    assert first.audit_events("governance.decision") == []
+
+    review = first.post(f"/governance/assets/{asset}/submit", {"reason": "ready"}).json()
+    base = f"/governance/approvals/{review['id']}"
+    reviewer = second.login("reviewer")
+    assert second.get("/governance/approvals").json() == {
+        "items": [], "total": 0, "limit": 50, "offset": 0
+    }
+    assert second.get(base).status_code == 404
+    assert second.get("/governance/approvals", asset_id=asset).json()["total"] == 0
+    assert second.post(f"{base}/assign", {"reviewer_id": outsider}, headers=reviewer
+                       ).status_code == 404
+    assert second.post(f"{base}/request-information", {"reason": "x"}, headers=reviewer
+                       ).status_code == 404
+    assert second.get("/governance/overview").json()["awaiting_approval"] == 0
+
+    # The owning side is unchanged, and its own reviewer can still act.
+    assert first.get(base).json()["status"] == "OPEN"
+    assert first.get("/governance/overview").json()["awaiting_approval"] == 1
+    mine = first.user_id("second-admin")
+    assert first.post(f"{base}/assign", {"reviewer_id": mine}, headers=second_admin
+                      ).status_code == 200
+    assert len(first.audit_events("governance.decision")) == 2
+
+    # A reviewer from another tenant cannot be assigned, even by id.
+    assert first.post(f"{base}/assign", {"reviewer_id": outsider}, headers=second_admin
+                      ).status_code == 422
+
+    # Below the service, a decision cannot be filed against another tenant's asset or review.
+    with pytest.raises(DBAPIError), db.tenant_transaction(second.id) as session:
+        session.execute(
+            text(
+                "INSERT INTO governance_decisions (id, tenant_id, asset_id, review_id, kind, "
+                "from_status, to_status, actor_type, decided_by, decided_at, reason, "
+                "audit_event_id) VALUES (:id, :tenant, :asset, :review, 'SUBMIT', 'DRAFT', "
+                "'UNDER_REVIEW', 'user', :user, now(), 'x', "
+                "(SELECT id FROM audit_events LIMIT 1))"
+            ),
+            {"id": uuid4(), "tenant": second.id, "asset": asset, "review": review["id"],
+             "user": outsider},
+        )

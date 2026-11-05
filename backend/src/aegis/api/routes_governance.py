@@ -19,6 +19,7 @@ from aegis.api.schemas_governance import (
     AssessmentOut,
     AssessmentSummaryOut,
     AssetDetailOut,
+    AssignIn,
     InventoryRowOut,
     MethodologyIn,
     MethodologyOut,
@@ -29,9 +30,21 @@ from aegis.api.schemas_governance import (
     PolicyVersionIn,
     PolicyVersionOut,
     ProfileVersionOut,
+    RequestInformationIn,
+    ReviewOut,
     RiskOut,
     RoleGrantIn,
     RoleGrantOut,
+    SubmitIn,
+)
+from aegis.db.models import GovernanceReview
+from aegis.governance.approvals import (
+    ReviewStatus,
+    assign_reviewer,
+    get_review,
+    list_reviews,
+    request_information,
+    submit,
 )
 from aegis.governance.assets import load_state, save_profile
 from aegis.governance.engine.lifecycle import GovernanceStatus
@@ -315,4 +328,77 @@ def policy_versions_deactivate(policy_id: UUID, id: UUID, user: AdminDep, contai
     with container.db.tenant_transaction(user.tenant_id) as session:
         return PolicyVersionOut.model_validate(
             deactivate_version(session, user, container.clock(), policy_id, id)
+        )
+
+
+# Submission and reviews
+
+
+def _review_out(review: GovernanceReview) -> ReviewOut:
+    return ReviewOut(
+        id=review.id,
+        asset_id=review.asset_id,
+        assessment_id=review.assessment_id,
+        profile_version_id=review.profile_version_id,
+        submitted_by=review.submitted_by,
+        assigned_reviewer=review.assigned_reviewer,
+        required_approvers=review.required_approvers,
+        status=review.status,
+        version=review.version,
+        submitted_at=review.submitted_at,
+        closed_at=review.closed_at,
+        required_controls=json.loads(review.required_controls_canonical),
+        findings=json.loads(review.findings_canonical),
+    )
+
+
+@router.post("/assets/{id}/submit", response_model=ReviewOut, status_code=201)
+def asset_submit(id: UUID, body: SubmitIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return _review_out(
+            submit(session, container.tools, user, container.clock(), id, reason=body.reason)
+        )
+
+
+@router.get("/approvals", response_model=Page[ReviewOut])
+def approvals_list(
+    user: UserDep,
+    container: ContainerDep,
+    status: ReviewStatus | None = None,
+    asset_id: UUID | None = None,
+    limit: LimitQuery = 50,
+    offset: OffsetQuery = 0,
+):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        reviews, total = list_reviews(
+            session, status=status.value if status else None, asset_id=asset_id, limit=limit,
+            offset=offset,
+        )
+        return Page[ReviewOut](
+            items=[_review_out(review) for review in reviews],
+            total=total, limit=limit, offset=offset,
+        )
+
+
+@router.get("/approvals/{id}", response_model=ReviewOut)
+def approvals_get(id: UUID, user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return _review_out(get_review(session, id))
+
+
+@router.post("/approvals/{id}/assign", response_model=ReviewOut)
+def approvals_assign(id: UUID, body: AssignIn, user: GovernanceReviewerDep,
+                     container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return _review_out(
+            assign_reviewer(session, user, container.clock(), id, body.reviewer_id)
+        )
+
+
+@router.post("/approvals/{id}/request-information", response_model=ReviewOut)
+def approvals_request_information(id: UUID, body: RequestInformationIn,
+                                  user: GovernanceReviewerDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return _review_out(
+            request_information(session, user, container.clock(), id, reason=body.reason)
         )
