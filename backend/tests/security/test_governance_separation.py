@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
-from test_governance_approvals import (
+
+from aegis.errors import Forbidden
+from aegis.gateway.tools import default_registry
+from aegis.governance.approvals import approve as approve_service
+from aegis.governance.approvals import reject as reject_service
+from aegis.security.principals import UserPrincipal
+from support import (
     APPROVALS,
     PROFILE,
     activate_policy,
@@ -20,12 +26,6 @@ from test_governance_approvals import (
     submitted,
     window,
 )
-
-from aegis.errors import Forbidden
-from aegis.gateway.tools import default_registry
-from aegis.governance.approvals import approve as approve_service
-from aegis.governance.approvals import reject as reject_service
-from aegis.security.principals import UserPrincipal
 
 
 def denied_events(tenant):

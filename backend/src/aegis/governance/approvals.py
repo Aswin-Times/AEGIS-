@@ -28,6 +28,7 @@ from aegis.db.models import (
     GovernanceDecisionEvidence,
     GovernanceDecisionPolicyVersion,
     GovernanceReview,
+    RiskAssessment,
 )
 from aegis.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from aegis.gateway.tools import ToolRegistry
@@ -36,7 +37,6 @@ from aegis.governance.assets import (
     load_state_for_update,
     lock_asset_agents,
     require_not_retired,
-    touch,
     transition,
 )
 from aegis.governance.conditions import Conditions, is_enforceable, validate_against_catalog
@@ -353,7 +353,7 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
     session.add(review)
     session.flush()
 
-    decision = record_decision(
+    record_decision(
         session,
         asset_id=asset_id,
         kind=DecisionKind.SUBMIT,
@@ -368,11 +368,11 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
         policy_version_ids=outcome.applicable_version_ids,
         payload_extra={"frozen_hash": review.frozen_hash},
     )
-    if previous is not None:
-        touch(session, state, now, current_decision_id=decision.id)
-    else:
-        transition(session, state, GovernanceStatus.UNDER_REVIEW, now,
-                   current_decision_id=decision.id)
+    # current_decision_id names the decision that holds authority or a block, and enforced
+    # conditions are read from it (spec 11.2), so a submission must not move it: a conditionally
+    # approved asset keeps its conditions while it is reassessed.
+    if previous is None:
+        transition(session, state, GovernanceStatus.UNDER_REVIEW, now)
     return review
 
 
@@ -539,16 +539,30 @@ def _require_dates(now: datetime, valid_until: datetime, next_review_at: datetim
         raise ValidationFailed("next_review_at must be in the future and not after valid_until.")
 
 
+def _require_assessment_current(session: Session, registry: ToolRegistry,
+                                review: GovernanceReview, state: AssetGovernanceState) -> None:
+    """An approval is of the asset as assessed, so the profile and grants must not have moved."""
+    assessment = session.get(RiskAssessment, review.assessment_id)
+    if (state.current_profile_version_id != review.profile_version_id or assessment is None
+            or assessment.input_hash != current_input_hash(session, registry, review.asset_id)):
+        raise _not_current()
+
+
 def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: datetime,
             review_id: UUID, *, reason: str, valid_until: datetime, next_review_at: datetime,
             conditions: Conditions | None = None,
             evidence_ids: Sequence[UUID] = ()) -> GovernanceDecision:
     """Record one approval. Short of the required number it is a vote; the last one decides.
 
-    Conditions on a vote are checked and stored but not applied: the final approval's conditions
-    are the ones that take effect, and it cannot drop conditions an earlier approver asked for.
+    Conditions on a vote are checked and stored but not applied. The final approval's conditions
+    are the ones that take effect: they must equal an earlier vote's, so nobody can weaken or drop
+    what another approver asked for, and may be added when no earlier vote set any.
     """
     review, state = _lock_for_decision(session, user, review_id)
+    if review.status == ReviewStatus.INFO_REQUESTED:
+        raise Conflict("Information has been requested, so this review cannot be approved yet.",
+                       code="REVIEW_AWAITING_INFORMATION")
+    _require_assessment_current(session, registry, review, state)
     if evidence_ids:
         # The evidence register arrives later; until then a reference could mean nothing.
         raise ValidationFailed("Evidence cannot be referenced until the evidence register exists.")
@@ -567,10 +581,14 @@ def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: 
     ).scalars().all()
     if any(vote.decided_by == user.id for vote in votes):
         raise Conflict("You have already voted on this review.", code="ALREADY_VOTED")
-    final = len(votes) + 1 >= review.required_approvers
-    if final and conditions is None and any(vote.conditions_canonical for vote in votes):
-        raise Conflict("An earlier approver set conditions, so the final approval must too.",
-                       code="CONDITIONS_MISMATCH")
+    # A vote counts only while its voter could still decide, so a revoked or downgraded voter
+    # cannot be the one that completes an approval.
+    counted = [vote for vote in votes if holds_reviewer(session, vote.decided_by)]
+    final = len(counted) + 1 >= review.required_approvers
+    own_hash = None if document is None else sha256_hex(canonical_json(document))
+    if final and any(vote.conditions_hash not in (None, own_hash) for vote in counted):
+        raise Conflict("The final approval must carry exactly the conditions an earlier "
+                       "approver set.", code="CONDITIONS_MISMATCH")
 
     common = {
         "asset_id": review.asset_id,

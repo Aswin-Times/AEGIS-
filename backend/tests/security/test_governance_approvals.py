@@ -17,86 +17,31 @@ from aegis.canonical import sha256_hex
 from aegis.db.models import SecurityEvent
 from aegis.events.projection import reprojection_matches
 from aegis.governance.approvals import _frozen_hash, record_decision
-from support import insert_decision
-
-ASSETS = "/governance/assets"
-APPROVALS = "/governance/approvals"
-POLICIES = "/governance/policies"
-
-PROFILE = {
-    "asset_type": "ai_application",
-    "data_categories": ["internal"],
-    "external_exposure": "none",
-    "autonomy_level": "advisory",
-    "declared_tool_access": [],
-    "human_oversight": "in_the_loop",
-    "impact_level": "negligible",
-    "deployment_environment": "development",
-    "third_party_reliance": "none",
-}
-
-
-def save_profile(tenant, asset_id, body=None):
-    response = tenant.post(f"{ASSETS}/{asset_id}/profile", PROFILE if body is None else body)
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def assess(tenant, asset_id):
-    response = tenant.post(f"{ASSETS}/{asset_id}/assess")
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def assessed_asset(tenant, profile=None) -> str:
-    asset_id = tenant.asset()["id"]
-    save_profile(tenant, asset_id, profile)
-    assess(tenant, asset_id)
-    return asset_id
-
-
-def submit(tenant, asset_id, reason="Ready for review.", headers=None):
-    body = {} if reason is None else {"reason": reason}
-    return tenant.post(f"{ASSETS}/{asset_id}/submit", body, headers=headers)
-
-
-def submitted(tenant, asset_id=None, **kwargs) -> dict:
-    response = submit(tenant, asset_id or assessed_asset(tenant), **kwargs)
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def reviewers(tenant) -> dict:
-    """The first admin and a second admin, who each hold governance_reviewer. Returns the second."""
-    second = tenant.login_as("second-admin", "admin")
-    if not getattr(tenant, "reviewers_granted", False):
-        tenant.grant_governance("admin", by="second-admin")
-        tenant.grant_governance("second-admin", by="admin")
-        tenant.reviewers_granted = True
-    return second
-
-
-def activate_policy(tenant, severity="medium", applicability=None, **controls) -> str:
-    second = reviewers(tenant)
-    policy = tenant.post(POLICIES, {"name": f"policy-{uuid4().hex[:8]}",
-                                    "category": "general"}).json()
-    version = tenant.post(
-        f"{POLICIES}/{policy['id']}/versions",
-        {
-            "document": {"description": "synthetic", "severity": severity,
-                         "applicability": applicability or {}, "controls": controls},
-            "effective_from": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
-        },
-    ).json()
-    path = f"{POLICIES}/{policy['id']}/versions/{version['id']}"
-    assert tenant.post(f"{path}/approve", headers=second).status_code == 200
-    assert tenant.post(f"{path}/activate").status_code == 200
-    return version["id"]
-
-
-def assign(tenant, review_id, reviewer_id, headers):
-    return tenant.post(f"{APPROVALS}/{review_id}/assign", {"reviewer_id": reviewer_id},
-                       headers=headers)
+from support import (
+    APPROVALS,
+    ASSETS,
+    PROFILE,
+    activate_policy,
+    another_holder,
+    approve,
+    assert_review_untouched,
+    assess,
+    assessed_asset,
+    assign,
+    decisions_of,
+    detail_status,
+    error_code,
+    insert_decision,
+    reject,
+    review_of,
+    review_status_of,
+    reviewers,
+    revoke_governance,
+    save_profile,
+    submit,
+    submitted,
+    window,
+)
 
 
 def request_information(tenant, review_id, headers, reason="Please attach the design review."):
@@ -104,34 +49,11 @@ def request_information(tenant, review_id, headers, reason="Please attach the de
     return tenant.post(f"{APPROVALS}/{review_id}/request-information", body, headers=headers)
 
 
-def review_of(tenant, review_id) -> dict:
-    response = tenant.get(f"{APPROVALS}/{review_id}")
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def detail_status(tenant, asset_id) -> str:
-    return tenant.get(f"{ASSETS}/{asset_id}").json()["governance_status"]
-
-
-def error_code(response) -> str:
-    return response.json()["error"]["code"]
-
-
 def force(attacker_sql, sql, params=()):
     """Run SQL as a compromised database owner, with the guard triggers switched off."""
     with attacker_sql.transaction():
         attacker_sql.execute("SET LOCAL session_replication_role = replica")
         attacker_sql.execute(sql, params)
-
-
-def decisions_of(attacker_sql, asset_id):
-    return attacker_sql.execute(
-        "SELECT d.kind, d.from_status, d.to_status, d.review_id, d.reason, d.id "
-        "FROM governance_decisions d JOIN audit_events a ON a.id = d.audit_event_id "
-        "WHERE d.asset_id = %s ORDER BY a.seq",
-        (asset_id,),
-    ).fetchall()
 
 
 def state_of(attacker_sql, asset_id):
@@ -254,7 +176,8 @@ def test_submit_records_review_decision_and_state_together(tenant, attacker_sql)
     assert decision[:5] == ("SUBMIT", "ASSESSMENT_REQUIRED", "UNDER_REVIEW", UUID(review["id"]),
                             "Ready for review.")
     status, version, current = state_of(attacker_sql, asset_id)
-    assert (status, current) == ("UNDER_REVIEW", decision[5])
+    # A submission holds no authority, so it is not the decision the state row points at.
+    assert (status, current) == ("UNDER_REVIEW", None)
     assert tenant.verify_audit()["valid"] is True
 
 
@@ -546,7 +469,7 @@ def test_resubmission_replaces_an_info_requested_review(tenant, attacker_sql):
     resubmit = rows[-1]
     assert resubmit[:5] == ("SUBMIT", "UNDER_REVIEW", "UNDER_REVIEW", UUID(second["id"]),
                             "Added the design review.")
-    assert state_of(attacker_sql, asset_id)[2] == resubmit[5]
+    assert state_of(attacker_sql, asset_id)[2] is None
 
     # The earlier vote stays with the earlier review, and the same person can vote again.
     votes = attacker_sql.execute(
@@ -1113,31 +1036,6 @@ def test_record_decision_stores_conditions_policy_versions_and_evidence(tenant, 
 # Approving and rejecting
 
 
-def window(valid_days=365, review_days=180) -> dict:
-    now = datetime.now(UTC)
-    return {"valid_until": (now + timedelta(days=valid_days)).isoformat(),
-            "next_review_at": (now + timedelta(days=review_days)).isoformat()}
-
-
-def approve(tenant, review_id, headers, reason="Controls are adequate.", conditions=None,
-            **overrides):
-    body = {"reason": reason, **window(), **overrides}
-    if conditions is not None:
-        body["conditions"] = conditions
-    return tenant.post(f"{APPROVALS}/{review_id}/approve", body, headers=headers)
-
-
-def reject(tenant, review_id, headers, reason="The risks are not mitigated."):
-    return tenant.post(f"{APPROVALS}/{review_id}/reject", {"reason": reason}, headers=headers)
-
-
-def another_holder(tenant, name):
-    """A further admin holding governance_reviewer, granted by the second admin."""
-    headers = tenant.login_as(name, "admin")
-    tenant.grant_governance(name, by="second-admin")
-    return headers
-
-
 def decision_row(attacker_sql, decision_id):
     return attacker_sql.execute(
         "SELECT kind, from_status, to_status, actor_type, decided_by, decided_at, reason, "
@@ -1153,23 +1051,9 @@ def full_state(attacker_sql, asset_id):
     ).fetchone()
 
 
-def review_status_of(attacker_sql, review_id):
-    return attacker_sql.execute(
-        "SELECT status FROM governance_reviews WHERE id = %s", (review_id,)).fetchone()[0]
-
-
 def status_reasons(tenant):
     """Reason codes of the status-change events, oldest first (the API lists newest first)."""
     return [item["reason_code"] for item in reversed(status_events(tenant))]
-
-
-def assert_review_untouched(tenant, attacker_sql, review, assigned=False):
-    """Nothing was decided: the review open, the asset still under review, no new decision."""
-    kinds = ["SUBMIT", "ASSIGN_REVIEWER"] if assigned else ["SUBMIT"]
-    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == kinds
-    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
-    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
-    assert tenant.verify_audit()["valid"] is True
 
 
 def test_approval_stores_full_decision_record(tenant, attacker_sql):
@@ -1263,7 +1147,8 @@ def test_conditional_approval_needs_conditions(tenant, attacker_sql):
         refused = approve(tenant, review["id"], holder, conditions=conditions)
         assert refused.status_code == 422, conditions
     for conditions in ({"unknown": 1}, {"hold_all": "yes"}, {"denied_tools": "send_message"},
-                       {"advisory_conditions": [""]}, [], "none"):
+                       {"advisory_conditions": [""]}, {"advisory_conditions": ["  \t "]}, [],
+                       "none"):
         assert approve(tenant, review["id"], holder, conditions=conditions
                        ).status_code == 422, conditions
     assert_review_untouched(tenant, attacker_sql, review)
@@ -1418,8 +1303,7 @@ def test_two_approvers_required_when_policy_says_so(tenant, attacker_sql):
         "APPROVAL_VOTE", "UNDER_REVIEW", "UNDER_REVIEW")
     assert (vote["review_status"], vote["governance_status"]) == ("OPEN", "UNDER_REVIEW")
     assert vote["valid_until"] is None and vote["next_review_at"] is None
-    submit_decision = decisions_of(attacker_sql, review["asset_id"])[0][5]
-    assert full_state(attacker_sql, review["asset_id"])[2:] == (submit_decision, None, None, None)
+    assert full_state(attacker_sql, review["asset_id"])[2:] == (None, None, None, None)
     assert review_status_of(attacker_sql, review["id"]) == "OPEN"
     assert status_reasons(tenant) == ["GOVERNANCE_SUBMIT"]
 
@@ -1459,7 +1343,7 @@ def test_votes_validate_their_conditions_and_dates(tenant, attacker_sql):
     assert_review_untouched(tenant, attacker_sql, review)
 
 
-def test_final_approval_applies_its_own_conditions_not_the_votes(tenant, attacker_sql):
+def test_final_approval_must_carry_the_conditions_of_the_votes(tenant, attacker_sql):
     holder = reviewers(tenant)
     third = another_holder(tenant, "third-admin")
     activate_policy(tenant, minimum_approvers=2)
@@ -1468,13 +1352,39 @@ def test_final_approval_applies_its_own_conditions_not_the_votes(tenant, attacke
     assert vote["kind"] == "APPROVAL_VOTE" and vote["conditions"]["hold_all"] is True
     assert full_state(attacker_sql, review["asset_id"])[0] == "UNDER_REVIEW"
 
+    # Weaker, different, and added-to conditions are all refused: only the same ones pass.
+    for conditions in ({"advisory_conditions": ["noted"]},
+                       {"denied_tools": ["send_message"]},
+                       {"hold_all": True, "advisory_conditions": ["and also this"]}):
+        refused = approve(tenant, review["id"], third, conditions=conditions)
+        assert (refused.status_code, error_code(refused)) == (409, "CONDITIONS_MISMATCH"), (
+            conditions)
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE"]
+
+    # The same conditions, spelled with defaults written out, hash the same.
+    final = approve(tenant, review["id"], third,
+                    conditions={"hold_all": True, "denied_tools": [], "held_tools": []})
+    assert final.status_code == 201, final.text
+    body = final.json()
+    assert (body["kind"], body["governance_status"]) == (
+        "APPROVE_CONDITIONAL", "CONDITIONALLY_APPROVED")
+    assert body["conditions_hash"] == vote["conditions_hash"]
+
+
+def test_final_approver_may_add_conditions_when_the_vote_had_none(tenant):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    vote = approve(tenant, review["id"], holder).json()
+    assert vote["kind"] == "APPROVAL_VOTE" and vote["conditions"] is None
     final = approve(tenant, review["id"], third, conditions={"denied_tools": ["send_message"]})
     assert final.status_code == 201, final.text
     body = final.json()
     assert (body["kind"], body["governance_status"]) == (
         "APPROVE_CONDITIONAL", "CONDITIONALLY_APPROVED")
     assert body["conditions"]["denied_tools"] == ["send_message"]
-    assert body["conditions"]["hold_all"] is False
 
 
 def test_a_second_approver_cannot_silently_drop_the_conditions(tenant, attacker_sql):
@@ -1489,7 +1399,7 @@ def test_a_second_approver_cannot_silently_drop_the_conditions(tenant, attacker_
     assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
         "SUBMIT", "APPROVAL_VOTE"]
     assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
-    # The second approver can still approve with conditions of their own.
+    # They can still approve with the same conditions.
     assert approve(tenant, review["id"], third, conditions={"hold_all": True}).status_code == 201
 
 
@@ -1721,3 +1631,153 @@ def test_tampered_profile_risk_factor_fails_submit_as_a_profile_error(tenant, at
     assert (refused.status_code, error_code(refused)) == (503, "PROFILE_INTEGRITY_FAILED")
     assert decisions_of(attacker_sql, asset_id) == []
     assert state_of(attacker_sql, asset_id) == before
+
+
+# A vote counts only while its voter could still decide
+
+
+def test_vote_of_revoked_holder_does_not_count(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    fourth = another_holder(tenant, "fourth-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder).json()["kind"] == "APPROVAL_VOTE"
+    revoke_governance(tenant, "second-admin")
+    # The revoked voter cannot vote again, and the index would stop a second vote anyway.
+    assert approve(tenant, review["id"], holder).status_code == 403
+
+    # B's approval is still a vote, because A's no longer counts.
+    second = approve(tenant, review["id"], third)
+    assert second.status_code == 201, second.text
+    assert second.json()["kind"] == "APPROVAL_VOTE"
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
+    again = approve(tenant, review["id"], third)
+    assert (again.status_code, error_code(again)) == (409, "ALREADY_VOTED")
+
+    # A further eligible person completes it.
+    final = approve(tenant, review["id"], fourth)
+    assert final.status_code == 201, final.text
+    assert (final.json()["kind"], final.json()["governance_status"]) == ("APPROVE", "APPROVED")
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == [
+        "SUBMIT", "APPROVAL_VOTE", "APPROVAL_VOTE", "APPROVE"]
+
+
+def test_conditions_of_a_revoked_voter_do_not_bind_the_final_approval(tenant):
+    holder = reviewers(tenant)
+    third = another_holder(tenant, "third-admin")
+    fourth = another_holder(tenant, "fourth-admin")
+    activate_policy(tenant, minimum_approvers=2)
+    review = submitted(tenant)
+    assert approve(tenant, review["id"], holder, conditions={"hold_all": True}
+                   ).status_code == 201
+    revoke_governance(tenant, "second-admin")
+    assert approve(tenant, review["id"], third).json()["kind"] == "APPROVAL_VOTE"
+    assert approve(tenant, review["id"], fourth).json()["kind"] == "APPROVE"
+
+
+# The assessment must still describe the asset
+
+
+@pytest.mark.parametrize("approvers", [1, 2], ids=["final_approval", "vote"])
+def test_grant_added_during_review_blocks_approval(tenant, attacker_sql, approvers):
+    holder = reviewers(tenant)
+    if approvers == 2:
+        activate_policy(tenant, minimum_approvers=2)
+    agent = tenant.agent(tools=["calculate"])
+    asset_id = tenant.get(f"/agents/{agent.id}").json()["asset_id"]
+    save_profile(tenant, asset_id)
+    assess(tenant, asset_id)
+    review = submitted(tenant, asset_id)
+    tenant.created(f"/agents/{agent.id}/tool-grants", {"tool": "send_message"})
+
+    refused = approve(tenant, review["id"], holder)
+    assert (refused.status_code, error_code(refused)) == (409, "ASSESSMENT_NOT_CURRENT")
+    assert_review_untouched(tenant, attacker_sql, review)
+
+    # The way out: ask for information, assess again, resubmit. The new review can be approved.
+    assert request_information(tenant, review["id"], holder).status_code == 200
+    assess(tenant, asset_id)
+    again = submitted(tenant, asset_id)
+    assert again["id"] != review["id"]
+    done = approve(tenant, again["id"], holder)
+    assert done.status_code == 201, done.text
+    assert done.json()["kind"] == ("APPROVE" if approvers == 1 else "APPROVAL_VOTE")
+
+
+@pytest.mark.parametrize("approvers", [1, 2], ids=["final_approval", "vote"])
+def test_profile_saved_during_review_blocks_approval(tenant, attacker_sql, approvers):
+    holder = reviewers(tenant)
+    if approvers == 2:
+        activate_policy(tenant, minimum_approvers=2)
+    asset_id = assessed_asset(tenant)
+    review = submitted(tenant, asset_id)
+    # Only the description changes, so the engine's inputs are identical; the profile still moved.
+    save_profile(tenant, asset_id, {**PROFILE, "description": "edited during review"})
+
+    refused = approve(tenant, review["id"], holder)
+    assert (refused.status_code, error_code(refused)) == (409, "ASSESSMENT_NOT_CURRENT")
+    assert_review_untouched(tenant, attacker_sql, review)
+
+    assert request_information(tenant, review["id"], holder).status_code == 200
+    assess(tenant, asset_id)
+    again = submitted(tenant, asset_id)
+    done = approve(tenant, again["id"], holder)
+    assert done.status_code == 201, done.text
+    assert done.json()["kind"] == ("APPROVE" if approvers == 1 else "APPROVAL_VOTE")
+
+
+def test_reject_is_allowed_on_a_review_whose_assessment_is_stale(tenant):
+    holder = reviewers(tenant)
+    asset_id = assessed_asset(tenant)
+    review = submitted(tenant, asset_id)
+    save_profile(tenant, asset_id, {**PROFILE, "description": "edited during review"})
+    assert approve(tenant, review["id"], holder).status_code == 409
+    rejected = reject(tenant, review["id"], holder)
+    assert rejected.status_code == 201, rejected.text
+    assert detail_status(tenant, asset_id) == "REJECTED"
+
+
+# While information is outstanding
+
+
+def test_approve_is_refused_while_information_is_requested_but_reject_is_not(tenant,
+                                                                           attacker_sql):
+    holder = reviewers(tenant)
+    activate_policy(tenant, minimum_approvers=2)
+    first, second = submitted(tenant), submitted(tenant)
+    for review in (first, second):
+        assert request_information(tenant, review["id"], holder).status_code == 200
+    refused = approve(tenant, first["id"], holder)
+    assert (refused.status_code, error_code(refused)) == (409, "REVIEW_AWAITING_INFORMATION")
+    assert [row[0] for row in decisions_of(attacker_sql, first["asset_id"])] == [
+        "SUBMIT", "REQUEST_INFORMATION"]
+    assert review_status_of(attacker_sql, first["id"]) == "INFO_REQUESTED"
+
+    rejected = reject(tenant, second["id"], holder)
+    assert rejected.status_code == 201, rejected.text
+    assert detail_status(tenant, second["asset_id"]) == "REJECTED"
+
+
+# Reassessment keeps the conditions that were approved
+
+
+def test_resubmission_keeps_the_approved_decision_as_current(tenant, attacker_sql):
+    holder = reviewers(tenant)
+    review = submitted(tenant)
+    approved = approve(tenant, review["id"], holder, conditions={"hold_all": True}).json()
+    asset_id = review["asset_id"]
+    before = full_state(attacker_sql, asset_id)
+    assert (before[0], str(before[2])) == ("CONDITIONALLY_APPROVED", approved["id"])
+
+    force(attacker_sql,
+          "UPDATE asset_governance_state SET status = 'REASSESSMENT_REQUIRED' "
+          "WHERE asset_id = %s", (asset_id,))
+    assess(tenant, asset_id)
+    resubmitted = submitted(tenant, asset_id)
+    assert detail_status(tenant, asset_id) == "UNDER_REVIEW"
+    after = full_state(attacker_sql, asset_id)
+    assert str(after[2]) == approved["id"]
+    assert (after[4], after[5]) == (before[4], before[5])
+    assert decisions_of(attacker_sql, asset_id)[-1][3] == UUID(resubmitted["id"])

@@ -48,6 +48,7 @@ def test_lists_are_sorted_and_deduplicated():
         {"denied_tools": "send_message"},
         {"denied_tools": [""]},
         {"advisory_conditions": [""]},
+        {"advisory_conditions": ["  \t "]},
         {"max_resource_classification": "secret"},
     ],
 )

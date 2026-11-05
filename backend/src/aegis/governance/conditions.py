@@ -14,7 +14,9 @@ if TYPE_CHECKING:
 
 Name = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=100)]
 Names = Annotated[list[Name], Field(max_length=50)]
-Advisory = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=1000)]
+Advisory = Annotated[
+    str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=1000)
+]
 ResourceClassification = Literal["public", "internal", "sensitive"]
 
 
