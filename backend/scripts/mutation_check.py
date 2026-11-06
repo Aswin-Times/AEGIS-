@@ -425,6 +425,10 @@ MUTATIONS = [
              "    mark_grant_changed(session, user, now, agent_id)\n"
              "    session.add(AgentToolGrant(",
              "    session.add(AgentToolGrant(", LIFECYCLE),
+    Mutation("Added resource grant does not force reassessment", REGISTRY,
+             "    mark_grant_changed(session, user, now, agent_id)\n    session.add(\n"
+             "        AgentResourceGrant(",
+             "    session.add(\n        AgentResourceGrant(", LIFECYCLE),
     Mutation("Grant hook acts on an unapproved asset", APPROVALS,
              "if state is None or state.status not in APPROVED_STATUSES:",
              "if state is None:", LIFECYCLE),

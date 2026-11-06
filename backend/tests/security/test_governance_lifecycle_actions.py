@@ -495,6 +495,27 @@ def test_added_grant_on_approved_asset_forces_reassessment(tenant, attacker_sql,
     assert tenant.verify_audit()["valid"] is True
 
 
+def test_resource_grant_that_raises_the_tool_level_makes_the_assessment_stale(tenant):
+    asset_id = tenant.asset()["id"]
+    agent_id = agent_of(tenant, asset_id)
+    assert tenant.post(f"/agents/{agent_id}/tool-grants", {"tool": "read_document"}
+                       ).status_code == 201
+    assert tenant.post(f"/agents/{agent_id}/resource-grants", {"resource_id": tenant.document()}
+                       ).status_code == 201
+    save_profile(tenant, asset_id)
+    assess(tenant, asset_id)
+    approve(tenant, submitted(tenant, asset_id)["id"], reviewers(tenant))
+
+    sensitive = tenant.document(classification="sensitive")
+    assert tenant.post(f"/agents/{agent_id}/resource-grants", {"resource_id": sensitive}
+                       ).status_code == 201
+    assert detail_status(tenant, asset_id) == "REASSESSMENT_REQUIRED"
+    refused = submit(tenant, asset_id)
+    assert (refused.status_code, error_code(refused)) == (409, "ASSESSMENT_NOT_CURRENT")
+    assess(tenant, asset_id)
+    assert submit(tenant, asset_id).status_code == 201
+
+
 def test_removed_grant_does_not_force_reassessment(tenant, attacker_sql):
     asset_id = tenant.asset()["id"]
     agent_id = agent_of(tenant, asset_id)

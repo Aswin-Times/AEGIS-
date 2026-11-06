@@ -419,16 +419,16 @@ def approvals_request_information(id: UUID, body: RequestInformationIn,
         )
 
 
-def _decision_out(session, decision: GovernanceDecision) -> DecisionOut:
+def _asset_decision_out(session, decision: GovernanceDecision) -> AssetDecisionOut:
     policy_versions, evidence = decision_references(session, decision)
-    review = session.get(GovernanceReview, decision.review_id)
-    return DecisionOut(
+    return AssetDecisionOut(
         id=decision.id,
         asset_id=decision.asset_id,
         review_id=decision.review_id,
         kind=decision.kind,
         from_status=decision.from_status,
         to_status=decision.to_status,
+        actor_type=decision.actor_type,
         decided_by=decision.decided_by,
         decided_at=decision.decided_at,
         reason=decision.reason,
@@ -441,6 +441,14 @@ def _decision_out(session, decision: GovernanceDecision) -> DecisionOut:
         audit_event_id=decision.audit_event_id,
         policy_version_ids=policy_versions,
         evidence_ids=evidence,
+    )
+
+
+def _decision_out(session, decision: GovernanceDecision) -> DecisionOut:
+    fields = _asset_decision_out(session, decision).model_dump(exclude={"actor_type"})
+    review = session.get(GovernanceReview, decision.review_id)
+    return DecisionOut(
+        **fields,
         review_status=review.status,
         governance_status=load_state(session, decision.asset_id).status,
     )
@@ -467,31 +475,6 @@ def approvals_reject(id: UUID, body: RejectIn, user: GovernanceReviewerDep,
 
 
 # Suspension, reassessment, and retirement
-
-
-def _asset_decision_out(session, decision: GovernanceDecision) -> AssetDecisionOut:
-    policy_versions, evidence = decision_references(session, decision)
-    return AssetDecisionOut(
-        id=decision.id,
-        asset_id=decision.asset_id,
-        review_id=decision.review_id,
-        kind=decision.kind,
-        from_status=decision.from_status,
-        to_status=decision.to_status,
-        actor_type=decision.actor_type,
-        decided_by=decision.decided_by,
-        decided_at=decision.decided_at,
-        reason=decision.reason,
-        assessment_id=decision.assessment_id,
-        conditions=(None if decision.conditions_canonical is None
-                    else json.loads(decision.conditions_canonical)),
-        conditions_hash=decision.conditions_hash,
-        valid_until=decision.valid_until,
-        next_review_at=decision.next_review_at,
-        audit_event_id=decision.audit_event_id,
-        policy_version_ids=policy_versions,
-        evidence_ids=evidence,
-    )
 
 
 def _lifecycle_out(session, decision: GovernanceDecision) -> LifecycleDecisionOut:
