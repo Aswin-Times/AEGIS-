@@ -24,6 +24,11 @@ from aegis.api.schemas_governance import (
     AssetDetailOut,
     AssignIn,
     DecisionOut,
+    EvidenceDetailOut,
+    EvidenceIn,
+    EvidenceOut,
+    EvidenceVerificationOut,
+    EvidenceVerifyIn,
     HistoryEntryOut,
     InventoryRowOut,
     LifecycleDecisionOut,
@@ -46,7 +51,11 @@ from aegis.api.schemas_governance import (
     RoleGrantOut,
     SubmitIn,
 )
-from aegis.db.models import GovernanceDecision, GovernanceReview
+from aegis.db.models import (
+    GovernanceDecision,
+    GovernanceEvidenceVerification,
+    GovernanceReview,
+)
 from aegis.governance.approvals import (
     ReviewStatus,
     approve,
@@ -63,6 +72,16 @@ from aegis.governance.approvals import (
 )
 from aegis.governance.assets import load_state, save_profile
 from aegis.governance.engine.lifecycle import GovernanceStatus
+from aegis.governance.evidence import (
+    EvidenceRecord,
+    get_evidence,
+    list_evidence,
+    record_of,
+    submit_evidence,
+    verification_history,
+    verification_scope,
+    verify_evidence,
+)
 from aegis.governance.inventory import asset_detail, asset_history, list_inventory, overview
 from aegis.governance.policies import (
     activate_version,
@@ -85,6 +104,7 @@ from aegis.governance.risk import (
     run_assessment,
 )
 from aegis.governance.roles import grant_role, list_people, revoke_grant
+from aegis.security.principals import ADMIN, REVIEWER
 
 router = APIRouter(prefix="/governance")
 
@@ -537,3 +557,84 @@ def asset_history_list(id: UUID, user: UserDep, container: ContainerDep,
                     created_by=version.created_by, created_at=version.created_at))
             items.append(HistoryEntryOut(**common))
         return Page[HistoryEntryOut](items=items, total=total, limit=limit, offset=offset)
+
+
+# Evidence
+
+
+def _verification_out(evidence, verification: GovernanceEvidenceVerification
+                      ) -> EvidenceVerificationOut:
+    return EvidenceVerificationOut(
+        id=verification.id, evidence_id=verification.evidence_id, outcome=verification.outcome,
+        method=verification.method, note=verification.note, verified_by=verification.verified_by,
+        verified_at=verification.verified_at, audit_event_id=verification.audit_event_id,
+        scope=verification_scope(evidence, verification.method),
+    )
+
+
+def _evidence_fields(user, record: EvidenceRecord) -> dict:
+    evidence = record.evidence
+    kind = record_of(evidence)
+    return dict(
+        id=evidence.id, asset_id=evidence.asset_id, category=evidence.category,
+        description=evidence.description, source_type=evidence.source_type,
+        submitted_by=evidence.submitted_by, created_at=evidence.created_at,
+        content_sha256=evidence.content_sha256, source_uri=evidence.source_uri,
+        record_type=None if kind is None else kind[0],
+        record_id=None if kind is None else kind[1],
+        # Inline text can hold anything, so a viewer sees the hash and metadata only.
+        content_text=evidence.content_text if user.role in (ADMIN, REVIEWER) else None,
+        control_ids=[],
+        current_verification=record.status,
+        latest_verification=(None if record.latest is None
+                             else _verification_out(evidence, record.latest)),
+    )
+
+
+@router.get("/evidence", response_model=Page[EvidenceOut])
+def evidence_list(
+    user: UserDep,
+    container: ContainerDep,
+    asset_id: UUID | None = None,
+    category: str | None = None,
+    verification: Literal["UNVERIFIED", "VERIFIED", "REJECTED"] | None = None,
+    limit: LimitQuery = 50,
+    offset: OffsetQuery = 0,
+):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        records, total = list_evidence(session, asset_id=asset_id, category=category,
+                                       status=verification, limit=limit, offset=offset)
+        return Page[EvidenceOut](
+            items=[EvidenceOut(**_evidence_fields(user, record)) for record in records],
+            total=total, limit=limit, offset=offset,
+        )
+
+
+@router.post("/evidence", response_model=EvidenceOut, status_code=201)
+def evidence_create(body: EvidenceIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        evidence = submit_evidence(
+            session, user, container.clock(), asset_id=body.asset_id, category=body.category,
+            description=body.description, source=body.source, control_ids=body.control_ids,
+        )
+        return EvidenceOut(**_evidence_fields(user, get_evidence(session, evidence.id)))
+
+
+@router.get("/evidence/{id}", response_model=EvidenceDetailOut)
+def evidence_detail(id: UUID, user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        record = get_evidence(session, id)
+        history = [_verification_out(record.evidence, item)
+                   for item in verification_history(session, id)]
+        return EvidenceDetailOut(**_evidence_fields(user, record), verifications=history)
+
+
+@router.post("/evidence/{id}/verify", response_model=EvidenceVerificationOut, status_code=201)
+def evidence_verify(id: UUID, body: EvidenceVerifyIn, user: GovernanceReviewerDep,
+                    container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        verification = verify_evidence(
+            session, user, container.clock(), id, outcome=body.outcome, method=body.method,
+            note=body.note, content=body.content,
+        )
+        return _verification_out(get_evidence(session, id).evidence, verification)

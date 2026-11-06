@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 from aegis.api.schemas import In, Out
 from aegis.governance.conditions import Conditions
 from aegis.governance.engine.risk import Methodology
+from aegis.governance.evidence import Category, EvidenceSource
 from aegis.governance.policy_schema import (
     GovernancePolicyDocument,
     PolicyCategory,
@@ -232,7 +233,7 @@ class ApproveIn(In):
     next_review_at: AwareDatetime
     # Optional conditions make the approval conditional.
     conditions: Conditions | None = None
-    # Accepted now so the contract does not change; the register that gives them meaning is later.
+    # Each must be this tenant's evidence for the review's asset.
     evidence_ids: list[UUID] = Field(default_factory=list, max_length=50)
 
 
@@ -316,3 +317,58 @@ class HistoryEntryOut(Out):
     decision: AssetDecisionOut | None
     assessment: AssessmentSummaryOut | None
     profile_version: ProfileVersionSummaryOut | None
+
+
+class EvidenceIn(In):
+    asset_id: UUID
+    category: Category
+    description: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=2000)]
+    source: EvidenceSource
+    # Only empty is accepted until the control library exists.
+    control_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class EvidenceVerifyIn(In):
+    outcome: Literal["VERIFIED", "REJECTED"]
+    method: Literal["internal_record_checked", "content_recomputed", "manual_attestation"]
+    note: Reason
+    # The content to compare with an external reference's declared hash.
+    content: Annotated[str, StringConstraints(strict=True, min_length=1)] | None = None
+
+
+class EvidenceVerificationOut(Out):
+    id: UUID
+    evidence_id: UUID
+    outcome: str
+    method: str
+    note: str
+    verified_by: UUID
+    verified_at: datetime
+    audit_event_id: UUID
+    # What this verification can have proved: hash_recomputed, record_verified, existence_only,
+    # or attestation_only.
+    scope: str
+
+
+class EvidenceOut(Out):
+    id: UUID
+    asset_id: UUID
+    category: str
+    description: str
+    source_type: str
+    submitted_by: UUID
+    created_at: datetime
+    content_sha256: str | None
+    source_uri: str | None
+    # The kind and id of an internal record.
+    record_type: str | None
+    record_id: UUID | None
+    # Inline text, for admins and reviewers only.
+    content_text: str | None
+    control_ids: list[UUID]
+    current_verification: str
+    latest_verification: EvidenceVerificationOut | None
+
+
+class EvidenceDetailOut(EvidenceOut):
+    verifications: list[EvidenceVerificationOut]

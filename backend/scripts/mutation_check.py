@@ -35,6 +35,8 @@ REGISTRY = "src/aegis/registry/service.py"
 GOVERNANCE_ROUTES = "src/aegis/api/routes_governance.py"
 RETIRED_MIGRATION = "migrations/versions/0010_governance_retired.py"
 LIFECYCLE = f"{SEC}/test_governance_lifecycle_actions.py"
+GOVERNANCE_EVIDENCE = "src/aegis/governance/evidence.py"
+EVIDENCE_TESTS = f"{SEC}/test_governance_evidence.py"
 
 
 @dataclass(frozen=True)
@@ -443,6 +445,23 @@ MUTATIONS = [
     Mutation("Retire open to a suspender", GOVERNANCE_ROUTES,
              "def asset_retire(id: UUID, body: LifecycleIn, user: AdminDep,",
              "def asset_retire(id: UUID, body: LifecycleIn, user: SuspenderDep,", LIFECYCLE),
+    Mutation("Submitter can verify own evidence", GOVERNANCE_EVIDENCE,
+             "if evidence.submitted_by == user.id:", "if False:", EVIDENCE_TESTS),
+    Mutation("Inline hash trusted from client", GOVERNANCE_EVIDENCE,
+             'model_config = ConfigDict(extra="forbid")\n\n    source_type: Literal["inline"]\n'
+             '    content_text: Annotated[str, StringConstraints(strict=True, min_length=1)]\n'
+             '\n    def stored_hash(self) -> str:\n        return sha256_hex(self.content_text)\n',
+             'model_config = ConfigDict(extra="allow")\n\n    source_type: Literal["inline"]\n'
+             '    content_text: Annotated[str, StringConstraints(strict=True, min_length=1)]\n'
+             '    content_sha256: str | None = None\n'
+             '\n    def stored_hash(self) -> str:\n'
+             '        return self.content_sha256 or sha256_hex(self.content_text)\n',
+             EVIDENCE_TESTS),
+    Mutation("Unverified evidence counted as verified", GOVERNANCE_EVIDENCE,
+             ".join(latest, latest.c.evidence_id == GovernanceEvidence.id)\n"
+             "        .where(GovernanceEvidence.asset_id == asset_id, "
+             "latest.c.outcome == VERIFIED)",
+             ".where(GovernanceEvidence.asset_id == asset_id)", EVIDENCE_TESTS),
 ]
 
 

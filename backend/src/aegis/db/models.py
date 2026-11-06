@@ -498,6 +498,47 @@ class GovernanceDecisionEvidence(Base):
     evidence_id: Mapped[UUID]
 
 
+class GovernanceEvidence(Base):
+    __tablename__ = "governance_evidence"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    asset_id: Mapped[UUID]
+    category: Mapped[str]
+    description: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str]
+    submitted_by: Mapped[UUID]
+    created_at: Mapped[datetime]
+    content_sha256: Mapped[str | None]
+    content_text: Mapped[str | None] = mapped_column(Text)
+    source_uri: Mapped[str | None] = mapped_column(Text)
+    assessment_id: Mapped[UUID | None]
+    decision_id: Mapped[UUID | None]
+    audit_event_id: Mapped[UUID | None]
+    incident_id: Mapped[UUID | None]
+    investigation_run_id: Mapped[UUID | None]
+
+
+class GovernanceEvidenceControl(Base):
+    __tablename__ = "governance_evidence_controls"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    evidence_id: Mapped[UUID]
+    control_id: Mapped[UUID]
+
+
+class GovernanceEvidenceVerification(Base):
+    __tablename__ = "governance_evidence_verifications"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    evidence_id: Mapped[UUID]
+    outcome: Mapped[str]
+    method: Mapped[str]
+    note: Mapped[str] = mapped_column(Text)
+    verified_by: Mapped[UUID]
+    verified_at: Mapped[datetime]
+    audit_event_id: Mapped[UUID]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

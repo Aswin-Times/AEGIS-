@@ -290,6 +290,9 @@ EXPECTED_TABLE_PRIVILEGES = {
     "governance_decisions": {"SELECT", "INSERT"},
     "governance_decision_policy_versions": {"SELECT", "INSERT"},
     "governance_decision_evidence": {"SELECT", "INSERT"},
+    "governance_evidence": {"SELECT", "INSERT"},
+    "governance_evidence_controls": {"SELECT", "INSERT"},
+    "governance_evidence_verifications": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {

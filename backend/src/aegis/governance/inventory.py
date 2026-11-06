@@ -24,6 +24,7 @@ from aegis.db.models import (
 from aegis.errors import NotFound
 from aegis.governance.approvals import outstanding_findings
 from aegis.governance.engine.lifecycle import GovernanceStatus
+from aegis.governance.evidence import evidence_counts
 from aegis.governance.risk import AssessmentRecord
 
 RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -259,6 +260,7 @@ def overview(session: Session, now: datetime) -> OverviewView:
         ).all()
     )
     assessed = {level: counts.get(level, 0) for level in RISK_LEVELS}
+    evidence_verified, evidence_total = evidence_counts(session)
     return OverviewView(
         total_assets=total,
         by_assessed_risk=assessed,
@@ -268,8 +270,8 @@ def overview(session: Session, now: datetime) -> OverviewView:
         suspended=by_status.get(GovernanceStatus.SUSPENDED.value, 0),
         overdue_reviews=overdue,
         outstanding_findings=outstanding_findings(session),
-        evidence_verified=0,  # Evidence arrives with the evidence register.
-        evidence_total=0,
+        evidence_verified=evidence_verified,
+        evidence_total=evidence_total,
         enforcement_mode=mode or DEFAULT_ENFORCEMENT_MODE,
     )
 

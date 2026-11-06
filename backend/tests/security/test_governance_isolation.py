@@ -299,3 +299,44 @@ def test_cross_tenant_lifecycle_and_history_access(world):
     assert first.get("/governance/overview").json()["suspended"] == 1
 
     assert second.post(f"{base}/retire", body).status_code == 404
+
+
+def test_cross_tenant_evidence_access_is_not_found(world):
+    from support import approve, reviewers, submitted
+
+    first, second = world.tenant(), world.tenant()
+    holder = reviewers(first)
+    second.grant_governance("reviewer")
+    asset = first.asset()["id"]
+    body = {"asset_id": asset, "category": "model_evaluation", "description": "Synthetic.",
+            "source": {"source_type": "inline", "content_text": "synthetic text"}}
+
+    # The other tenant cannot add evidence to the asset, and nothing is written on either side.
+    assert second.post("/governance/evidence", body).status_code == 404
+    assert second.audit_events("governance.evidence_submitted") == []
+    created = first.post("/governance/evidence", body)
+    assert created.status_code == 201
+    path = f"/governance/evidence/{created.json()['id']}"
+
+    # It finds nothing to read or verify, whatever its role or grants.
+    assert second.get(path).status_code == 404
+    assert second.get("/governance/evidence").json()["total"] == 0
+    assert second.get("/governance/evidence", asset_id=asset).json()["total"] == 0
+    verify = {"outcome": "VERIFIED", "method": "manual_attestation", "note": "Mine now."}
+    assert second.post(f"{path}/verify", verify, headers=second.login("reviewer")
+                       ).status_code == 404
+    assert second.audit_events("governance.evidence_verified") == []
+    assert second.get("/governance/overview").json()["evidence_total"] == 0
+
+    # The owning side is unchanged, and can still verify with its own reviewer.
+    assert first.get(path).json()["current_verification"] == "UNVERIFIED"
+    assert first.post(f"{path}/verify", verify, headers=holder).status_code == 201
+    assert first.get("/governance/overview").json()["evidence_verified"] == 1
+    assert second.get("/governance/overview").json()["evidence_verified"] == 0
+
+    # Evidence of another tenant cannot be named on an approval.
+    review = submitted(first)
+    other = second.asset()["id"]
+    foreign = second.post("/governance/evidence", {**body, "asset_id": other}).json()["id"]
+    refused = approve(first, review["id"], holder, evidence_ids=[foreign])
+    assert refused.status_code == 422

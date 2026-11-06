@@ -47,6 +47,7 @@ from aegis.governance.assets import (
 from aegis.governance.conditions import Conditions, is_enforceable, validate_against_catalog
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.engine.policies import PolicyOutcome, evaluate_policies
+from aegis.governance.evidence import require_asset_evidence, verified_categories
 from aegis.governance.policies import applicable_documents
 from aegis.governance.profile import AssetProfile
 from aegis.governance.risk import current_input_hash, latest_assessment, recomputes_to_stored_result
@@ -330,9 +331,9 @@ def submit(session: Session, registry: ToolRegistry, user: UserPrincipal, now: d
             or assessment.input_hash != current_input_hash(session, registry, asset_id)):
         raise _not_current()
 
-    # Verified evidence arrives with the evidence register.
+    # Only evidence whose latest verification is VERIFIED clears a required category.
     outcome = evaluate_policies(applicable_documents(session, now), profile,
-                                assessment.risk_level, set())
+                                assessment.risk_level, verified_categories(session, asset_id))
 
     if previous is not None:
         previous.status = ReviewStatus.WITHDRAWN.value
@@ -570,9 +571,7 @@ def approve(session: Session, registry: ToolRegistry, user: UserPrincipal, now: 
         raise Conflict("Information has been requested, so this review cannot be approved yet.",
                        code="REVIEW_AWAITING_INFORMATION")
     _require_assessment_current(session, registry, review, state)
-    if evidence_ids:
-        # The evidence register arrives later; until then a reference could mean nothing.
-        raise ValidationFailed("Evidence cannot be referenced until the evidence register exists.")
+    evidence_ids = require_asset_evidence(session, review.asset_id, evidence_ids)
     _require_dates(now, valid_until, next_review_at)
     if conditions is not None:
         if not is_enforceable(conditions) and not conditions.advisory_conditions:
