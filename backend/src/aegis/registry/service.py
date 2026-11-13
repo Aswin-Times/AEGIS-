@@ -24,6 +24,7 @@ from aegis.db.models import (
 )
 from aegis.errors import NotFound, ValidationFailed
 from aegis.gateway.tools import ToolRegistry
+from aegis.governance.approvals import mark_grant_changed
 from aegis.policy.schema import PolicyDocument
 from aegis.security.agent_keys import format_key, generate_secret, hash_secret
 from aegis.security.principals import UserPrincipal
@@ -188,6 +189,7 @@ def add_tool_grant(session: Session, user: UserPrincipal, now: datetime, agent_i
     _agent_or_404(session, agent_id)
     if registry.get(tool) is None:
         raise ValidationFailed("This tool is not in the catalog.")
+    mark_grant_changed(session, user, now, agent_id)
     session.add(AgentToolGrant(tenant_id=user.tenant_id, agent_id=agent_id, tool=tool))
     session.flush()
     _audit(session, user, "grant.tool_added", "agent", agent_id, now, tool=tool)
@@ -208,6 +210,7 @@ def add_resource_grant(session: Session, user: UserPrincipal, now: datetime, age
     _agent_or_404(session, agent_id)
     if session.get(Resource, resource_id) is None:
         raise NotFound()
+    mark_grant_changed(session, user, now, agent_id)
     session.add(
         AgentResourceGrant(tenant_id=user.tenant_id, agent_id=agent_id, resource_id=resource_id)
     )

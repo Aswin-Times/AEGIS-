@@ -1,10 +1,11 @@
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, StringConstraints, model_validator
+from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from aegis.api.schemas import In, Out
+from aegis.governance.conditions import Conditions
 from aegis.governance.engine.risk import Methodology
 from aegis.governance.policy_schema import (
     GovernancePolicyDocument,
@@ -222,3 +223,96 @@ class ReviewOut(Out):
     # What the policy engine asked for when the review was opened, frozen at that moment.
     required_controls: dict[str, Any]
     findings: list[dict[str, Any]]
+
+
+class ApproveIn(In):
+    reason: Reason
+    # Both must carry a time zone, because a date with no zone has no single meaning.
+    valid_until: AwareDatetime
+    next_review_at: AwareDatetime
+    # Optional conditions make the approval conditional.
+    conditions: Conditions | None = None
+    # Accepted now so the contract does not change; the register that gives them meaning is later.
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class RejectIn(In):
+    reason: Reason
+
+
+class DecisionOut(Out):
+    id: UUID
+    asset_id: UUID
+    review_id: UUID
+    kind: str
+    from_status: str
+    to_status: str
+    decided_by: UUID
+    decided_at: datetime
+    reason: str
+    assessment_id: UUID
+    conditions: dict[str, Any] | None
+    conditions_hash: str | None
+    valid_until: datetime | None
+    next_review_at: datetime | None
+    audit_event_id: UUID
+    policy_version_ids: list[UUID]
+    evidence_ids: list[UUID]
+    # Where the review and the asset stand after this decision. A vote leaves both open.
+    review_status: str
+    governance_status: str
+
+
+class LifecycleIn(In):
+    reason: Reason
+
+
+class AssetDecisionOut(Out):
+    """A decision on an asset, whether or not a review produced it."""
+
+    id: UUID
+    asset_id: UUID
+    review_id: UUID | None
+    kind: str
+    from_status: str
+    to_status: str
+    actor_type: str
+    # Null only when the system made the decision.
+    decided_by: UUID | None
+    decided_at: datetime
+    reason: str
+    assessment_id: UUID | None
+    conditions: dict[str, Any] | None
+    conditions_hash: str | None
+    valid_until: datetime | None
+    next_review_at: datetime | None
+    audit_event_id: UUID
+    policy_version_ids: list[UUID]
+    evidence_ids: list[UUID]
+
+
+class LifecycleDecisionOut(AssetDecisionOut):
+    governance_status: str
+
+
+class ProfileVersionSummaryOut(Out):
+    id: UUID
+    version: int
+    content_hash: str
+    created_by: UUID
+    created_at: datetime
+
+
+class HistoryEntryOut(Out):
+    """One record of an asset's history. Exactly one of the three bodies is set, by `type`."""
+
+    type: Literal["decision", "assessment", "profile_version"]
+    # The audit sequence of the event that records this entry, which is what orders the history.
+    seq: int
+    id: UUID
+    audit_event_id: UUID
+    # The decision kind, for a decision.
+    kind: str | None
+    decision: AssetDecisionOut | None
+    assessment: AssessmentSummaryOut | None
+    profile_version: ProfileVersionSummaryOut | None

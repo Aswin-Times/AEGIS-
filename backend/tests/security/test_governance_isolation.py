@@ -230,6 +230,11 @@ def test_cross_tenant_approval_access(world, db):
                        ).status_code == 404
     assert second.post(f"{base}/request-information", {"reason": "x"}, headers=reviewer
                        ).status_code == 404
+    when = {"valid_until": "2099-01-01T00:00:00+00:00",
+            "next_review_at": "2098-01-01T00:00:00+00:00"}
+    assert second.post(f"{base}/approve", {"reason": "x", **when}, headers=reviewer
+                       ).status_code == 404
+    assert second.post(f"{base}/reject", {"reason": "x"}, headers=reviewer).status_code == 404
     assert second.get("/governance/overview").json()["awaiting_approval"] == 0
 
     # The owning side is unchanged, and its own reviewer can still act.
@@ -257,3 +262,40 @@ def test_cross_tenant_approval_access(world, db):
             {"id": uuid4(), "tenant": second.id, "asset": asset, "review": review["id"],
              "user": outsider},
         )
+
+    # And its own reviewer, not the other tenant's, decides it.
+    assert first.post(f"{base}/approve", {"reason": "x", **when}, headers=second_admin
+                      ).status_code == 201
+
+
+def test_cross_tenant_lifecycle_and_history_access(world):
+    from support import assess, save_profile
+
+    first, second = world.tenant(), world.tenant()
+    second.grant_governance("reviewer")
+    asset = first.asset()["id"]
+    base = f"/governance/assets/{asset}"
+    body = {"reason": "not yours"}
+
+    # The other tenant finds nothing, whatever its role or grants, and nothing is written.
+    for action, headers in (("suspend", None), ("revoke", None), ("reassess", None),
+                            ("retire", None), ("suspend", second.login("reviewer"))):
+        assert second.post(f"{base}/{action}", body, headers=headers).status_code == 404, action
+    assert second.get(f"{base}/history").status_code == 404
+    assert first.audit_events("governance.decision") == []
+    assert second.audit_events("governance.decision") == []
+    assert first.get(f"{base}").json()["governance_status"] is None
+
+    # History is a tenant's own: the other side's records never appear in it.
+    save_profile(first, asset)
+    assess(first, asset)
+    assert first.post(f"{base}/suspend", body).status_code == 201
+    assert [item["type"] for item in first.get(f"{base}/history").json()["items"]] == [
+        "profile_version", "assessment", "decision"]
+    assert second.get(f"{base}/history").status_code == 404
+    other = second.asset()["id"]
+    assert second.get(f"/governance/assets/{other}/history").json()["items"] == []
+    assert second.get("/governance/overview").json()["suspended"] == 0
+    assert first.get("/governance/overview").json()["suspended"] == 1
+
+    assert second.post(f"{base}/retire", body).status_code == 404

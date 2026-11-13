@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, String, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -15,13 +15,16 @@ from aegis.db.models import (
     AssetGovernanceState,
     AssetProfileVersion,
     AuditEvent,
+    GovernanceDecision,
     GovernanceSettings,
     RiskAssessment,
+    RiskMethodologyVersion,
     User,
 )
 from aegis.errors import NotFound
 from aegis.governance.approvals import outstanding_findings
 from aegis.governance.engine.lifecycle import GovernanceStatus
+from aegis.governance.risk import AssessmentRecord
 
 RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 DEFAULT_ENFORCEMENT_MODE = "observe"
@@ -269,3 +272,66 @@ def overview(session: Session, now: datetime) -> OverviewView:
         evidence_total=0,
         enforcement_mode=mode or DEFAULT_ENFORCEMENT_MODE,
     )
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    type: str
+    seq: int
+    audit_event_id: UUID
+    record: GovernanceDecision | AssessmentRecord | AssetProfileVersion
+
+
+def asset_history(session: Session, asset_id: UUID, *, limit: int,
+                  offset: int) -> tuple[list[HistoryEntry], int]:
+    """Decisions, assessments, and profile versions of one asset, oldest first by audit sequence.
+
+    A profile version carries no event of its own, so it is placed by the event that saved it,
+    which names it in its payload. A row with no such event is not part of the history.
+    """
+    if session.get(AiAsset, asset_id) is None:
+        raise NotFound()
+    ordered = union_all(
+        select(AuditEvent.seq.label("seq"), literal("decision").label("type"),
+               GovernanceDecision.id.label("id"), AuditEvent.id.label("audit_event_id"))
+        .join(AuditEvent, AuditEvent.id == GovernanceDecision.audit_event_id)
+        .where(GovernanceDecision.asset_id == asset_id),
+        select(AuditEvent.seq, literal("assessment"), RiskAssessment.id, AuditEvent.id)
+        .join(AuditEvent, AuditEvent.id == RiskAssessment.audit_event_id)
+        .where(RiskAssessment.asset_id == asset_id),
+        select(AuditEvent.seq, literal("profile_version"), AssetProfileVersion.id,
+               AuditEvent.id)
+        .join(
+            AuditEvent,
+            (AuditEvent.event_type == "governance.profile_saved")
+            & (AuditEvent.subject_id == asset_id)
+            & (AuditEvent.payload["profile_version_id"].astext
+               == cast(AssetProfileVersion.id, String)),
+        )
+        .where(AssetProfileVersion.asset_id == asset_id),
+    ).subquery("history")
+    rows = session.execute(
+        select(ordered).order_by(ordered.c.seq).limit(limit).offset(offset)
+    ).all()
+    total = session.execute(select(func.count()).select_from(ordered)).scalar_one()
+
+    wanted = {kind: [row.id for row in rows if row.type == kind]
+              for kind in ("decision", "assessment", "profile_version")}
+    decisions = {item.id: item for item in session.execute(
+        select(GovernanceDecision).where(GovernanceDecision.id.in_(wanted["decision"]))
+    ).scalars()}
+    assessments = {row[0].id: AssessmentRecord(row[0], row[1]) for row in session.execute(
+        select(RiskAssessment, RiskMethodologyVersion.version)
+        .join(RiskMethodologyVersion,
+              RiskMethodologyVersion.id == RiskAssessment.methodology_version_id)
+        .where(RiskAssessment.id.in_(wanted["assessment"]))
+    ).all()}
+    profiles = {item.id: item for item in session.execute(
+        select(AssetProfileVersion).where(AssetProfileVersion.id.in_(wanted["profile_version"]))
+    ).scalars()}
+    records = {"decision": decisions, "assessment": assessments, "profile_version": profiles}
+
+    return [
+        HistoryEntry(row.type, row.seq, row.audit_event_id, records[row.type][row.id])
+        for row in rows
+    ], total
