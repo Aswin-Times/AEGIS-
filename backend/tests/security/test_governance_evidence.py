@@ -476,9 +476,11 @@ def test_evidence_and_verifications_are_append_only(db, tenant, attacker_sql):
     second = reviewers(tenant)
     created = evidence_of(tenant, tenant.asset()["id"])
     assert verify(tenant, created["id"], second).status_code == 201
+    # The link must name a real control since 0012 added its foreign key.
+    control = tenant.get("/governance/controls").json()["items"][0]["id"]
     attacker_sql.execute(
         "INSERT INTO governance_evidence_controls (id, tenant_id, evidence_id, control_id) "
-        "VALUES (%s, %s, %s, %s)", (uuid4(), tenant.id, created["id"], uuid4()))
+        "VALUES (%s, %s, %s, %s)", (uuid4(), tenant.id, created["id"], control))
     tables = ("governance_evidence", "governance_evidence_controls",
               "governance_evidence_verifications")
     for table in tables:
@@ -594,6 +596,21 @@ def test_control_ids_are_refused_until_controls_exist(tenant):
     asset = tenant.asset()["id"]
     assert submit_evidence(tenant, asset, control_ids=[str(uuid4())]).status_code == 422
     assert submit_evidence(tenant, asset, control_ids=[]).status_code == 201
+
+
+def test_control_ids_must_name_this_tenants_controls(world):
+    first, second = world.tenant(), world.tenant()
+    mine = first.get("/governance/controls").json()["items"][0]["id"]
+    theirs = second.get("/governance/controls").json()["items"][0]["id"]
+    asset = first.asset()["id"]
+
+    assert submit_evidence(first, asset, control_ids=[theirs]).status_code == 422
+    assert submit_evidence(first, asset, control_ids=[mine, theirs]).status_code == 422
+    assert first.get(EVIDENCE).json()["total"] == 0
+    created = evidence_of(first, asset, control_ids=[mine])
+    assert created["control_ids"] == [mine]
+    # A link does not verify anything: the item is still unverified.
+    assert created["current_verification"] == "UNVERIFIED"
 
 
 # Shape

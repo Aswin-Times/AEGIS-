@@ -293,6 +293,10 @@ EXPECTED_TABLE_PRIVILEGES = {
     "governance_evidence": {"SELECT", "INSERT"},
     "governance_evidence_controls": {"SELECT", "INSERT"},
     "governance_evidence_verifications": {"SELECT", "INSERT"},
+    "governance_frameworks": {"SELECT", "INSERT"},
+    "governance_controls": {"SELECT", "INSERT"},
+    "governance_control_assessments": {"SELECT", "INSERT"},
+    "governance_control_assessment_evidence": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {

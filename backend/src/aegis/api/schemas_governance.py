@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
-from aegis.api.schemas import In, Out
+from aegis.api.schemas import In, Out, Page
 from aegis.governance.conditions import Conditions
 from aegis.governance.engine.risk import Methodology
 from aegis.governance.evidence import Category, EvidenceSource
@@ -324,7 +324,7 @@ class EvidenceIn(In):
     category: Category
     description: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=2000)]
     source: EvidenceSource
-    # Only empty is accepted until the control library exists.
+    # Controls of this tenant's framework library.
     control_ids: list[UUID] = Field(default_factory=list, max_length=50)
 
 
@@ -372,3 +372,66 @@ class EvidenceOut(Out):
 
 class EvidenceDetailOut(EvidenceOut):
     verifications: list[EvidenceVerificationOut]
+
+
+# Compliance. Every response carries the statement that a mapping is not a certification.
+
+
+class CompliancePage[T](Page[T]):
+    statement: str
+
+
+class FrameworkOut(Out):
+    id: UUID
+    key: str
+    version: str
+    name: str
+    source_url: str | None
+    source_document: str
+    # NOT_LOADED, LOADED_PARTIAL, or LOADED.
+    library_status: str
+    # Controls stored for this tenant, against the identifiers the source defines (null when
+    # none were verified).
+    control_count: int
+    source_control_count: int | None
+    coverage: str
+    status_counts: dict[str, int]
+
+
+class ControlAssessmentSummaryOut(Out):
+    id: UUID
+    status: str
+    note: str
+    assessed_by: UUID
+    assessed_at: datetime
+    audit_event_id: UUID
+    evidence_ids: list[UUID]
+
+
+class ControlOut(Out):
+    id: UUID
+    framework_id: UUID
+    framework_key: str
+    identifier: str
+    name: str
+    description: str
+    source_reference: str
+    required_evidence: list[str]
+    # NOT_ASSESSED with no assessment; EVIDENCE_REQUIRED when the latest assessment claims
+    # implementation but no linked evidence is currently verified; otherwise the assessed status.
+    current_status: str
+    latest_assessment: ControlAssessmentSummaryOut | None
+    verified_evidence_count: int
+    linked_evidence_count: int
+
+
+class ControlAssessIn(In):
+    status: Literal["IMPLEMENTED", "PARTIALLY_IMPLEMENTED", "NOT_IMPLEMENTED", "NOT_APPLICABLE"]
+    note: Reason
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class ControlAssessmentOut(ControlAssessmentSummaryOut):
+    control_id: UUID
+    current_status: str
+    statement: str

@@ -37,6 +37,10 @@ RETIRED_MIGRATION = "migrations/versions/0010_governance_retired.py"
 LIFECYCLE = f"{SEC}/test_governance_lifecycle_actions.py"
 GOVERNANCE_EVIDENCE = "src/aegis/governance/evidence.py"
 EVIDENCE_TESTS = f"{SEC}/test_governance_evidence.py"
+COMPLIANCE = "src/aegis/governance/compliance.py"
+COMPLIANCE_TESTS = f"{SEC}/test_governance_compliance.py"
+FRAMEWORKS_MIGRATION = "migrations/versions/0012_governance_frameworks.py"
+LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
 @dataclass(frozen=True)
@@ -465,6 +469,20 @@ MUTATIONS = [
              "        .where(GovernanceEvidence.asset_id == asset_id, "
              "latest.c.outcome == VERIFIED)",
              ".where(GovernanceEvidence.asset_id == asset_id)", EVIDENCE_TESTS),
+    Mutation("Unverified evidence supports a control status", GOVERNANCE_EVIDENCE,
+             f"        .join({LINK_JOIN})\n        .where(latest.c.outcome == VERIFIED)\n",
+             f"        .outerjoin({LINK_JOIN})\n", COMPLIANCE_TESTS),
+    Mutation("Rejected evidence supports a control status", GOVERNANCE_EVIDENCE,
+             f"        .join({LINK_JOIN})\n        .where(latest.c.outcome == VERIFIED)\n",
+             f"        .join({LINK_JOIN})\n"
+             "        .where(latest.c.outcome.in_((VERIFIED, REJECTED)))\n",
+             COMPLIANCE_TESTS),
+    Mutation("Control assessment open to a non-reviewer", COMPLIANCE,
+             "    if not holds_reviewer(session, user.id):\n        raise Forbidden()\n"
+             "    cited = ", "    cited = ", COMPLIANCE_TESTS),
+    Mutation("Control assessment guard trigger absent", FRAMEWORKS_MIGRATION,
+             "IF NEW.status IN ('IMPLEMENTED', 'PARTIALLY_IMPLEMENTED') AND NOT EXISTS (",
+             "IF false AND NOT EXISTS (", COMPLIANCE_TESTS),
 ]
 
 

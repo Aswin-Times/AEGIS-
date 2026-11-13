@@ -340,3 +340,33 @@ def test_cross_tenant_evidence_access_is_not_found(world):
     foreign = second.post("/governance/evidence", {**body, "asset_id": other}).json()["id"]
     refused = approve(first, review["id"], holder, evidence_ids=[foreign])
     assert refused.status_code == 422
+
+
+def test_cross_tenant_compliance_access_is_not_found(world):
+    from support import reviewers
+
+    first, second = world.tenant(), world.tenant()
+    holder = reviewers(first)
+    other_holder = reviewers(second)
+    mine = {item["key"]: item for item in first.get("/governance/frameworks").json()["items"]}
+    control = first.get("/governance/controls").json()["items"][0]["id"]
+    body = {"status": "NOT_APPLICABLE", "note": "Not yours."}
+
+    # The other tenant sees only its own library, and cannot assess this tenant's control.
+    theirs = {item["key"]: item for item in second.get("/governance/frameworks").json()["items"]}
+    assert {item["id"] for item in theirs.values()}.isdisjoint(
+        item["id"] for item in mine.values())
+    assert second.get("/governance/controls", framework_id=mine["nist_ai_rmf"]["id"]
+                      ).json()["total"] == 0
+    assert control not in [item["id"] for item in
+                           second.get("/governance/controls", limit=100).json()["items"]]
+    assert second.post(f"/governance/controls/{control}/assess", body, headers=other_holder
+                       ).status_code == 404
+    assert second.audit_events("governance.control_assessed") == []
+    assert first.audit_events("governance.control_assessed") == []
+
+    # The owning side is unchanged, and its own holder can still assess.
+    assert first.post(f"/governance/controls/{control}/assess", body, headers=holder
+                      ).status_code == 201
+    counts = second.get("/governance/frameworks").json()["items"]
+    assert all(item["status_counts"]["NOT_APPLICABLE"] == 0 for item in counts)

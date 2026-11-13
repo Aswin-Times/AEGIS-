@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import DateTime, Integer, LargeBinary, Text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -537,6 +537,56 @@ class GovernanceEvidenceVerification(Base):
     verified_by: Mapped[UUID]
     verified_at: Mapped[datetime]
     audit_event_id: Mapped[UUID]
+
+
+class GovernanceFramework(Base):
+    __tablename__ = "governance_frameworks"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    key: Mapped[str]
+    version: Mapped[str]
+    name: Mapped[str]
+    source_url: Mapped[str | None]
+    source_document: Mapped[str]
+    library_status: Mapped[str]
+    source_control_count: Mapped[int | None]
+    created_at: Mapped[datetime]
+
+
+class GovernanceControl(Base):
+    __tablename__ = "governance_controls"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    framework_id: Mapped[UUID]
+    position: Mapped[int]
+    control_identifier: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(Text)
+    source_reference: Mapped[str]
+    required_evidence: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    policy_id: Mapped[UUID | None]
+    created_at: Mapped[datetime]
+
+
+class GovernanceControlAssessment(Base):
+    __tablename__ = "governance_control_assessments"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    control_id: Mapped[UUID]
+    status: Mapped[str]
+    note: Mapped[str] = mapped_column(Text)
+    assessed_by: Mapped[UUID]
+    assessed_at: Mapped[datetime]
+    audit_event_id: Mapped[UUID]
+
+
+class GovernanceControlAssessmentEvidence(Base):
+    __tablename__ = "governance_control_assessment_evidence"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    assessment_id: Mapped[UUID]
+    control_id: Mapped[UUID]
+    evidence_id: Mapped[UUID]
 
 
 class AuditChainHead(Base):

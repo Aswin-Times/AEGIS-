@@ -23,12 +23,18 @@ from aegis.api.schemas_governance import (
     AssetDecisionOut,
     AssetDetailOut,
     AssignIn,
+    CompliancePage,
+    ControlAssessIn,
+    ControlAssessmentOut,
+    ControlAssessmentSummaryOut,
+    ControlOut,
     DecisionOut,
     EvidenceDetailOut,
     EvidenceIn,
     EvidenceOut,
     EvidenceVerificationOut,
     EvidenceVerifyIn,
+    FrameworkOut,
     HistoryEntryOut,
     InventoryRowOut,
     LifecycleDecisionOut,
@@ -52,6 +58,7 @@ from aegis.api.schemas_governance import (
     SubmitIn,
 )
 from aegis.db.models import (
+    GovernanceControlAssessment,
     GovernanceDecision,
     GovernanceEvidenceVerification,
     GovernanceReview,
@@ -71,10 +78,20 @@ from aegis.governance.approvals import (
     suspend,
 )
 from aegis.governance.assets import load_state, save_profile
+from aegis.governance.compliance import (
+    NO_CERTIFICATION_STATEMENT,
+    ControlRecord,
+    assess_control,
+    ensure_frameworks,
+    get_control,
+    list_controls,
+    list_frameworks,
+)
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.evidence import (
     EvidenceRecord,
     get_evidence,
+    linked_controls,
     list_evidence,
     record_of,
     submit_evidence,
@@ -572,7 +589,7 @@ def _verification_out(evidence, verification: GovernanceEvidenceVerification
     )
 
 
-def _evidence_fields(user, record: EvidenceRecord) -> dict:
+def _evidence_fields(user, record: EvidenceRecord, controls: dict[UUID, list[UUID]]) -> dict:
     evidence = record.evidence
     kind = record_of(evidence)
     return dict(
@@ -584,7 +601,7 @@ def _evidence_fields(user, record: EvidenceRecord) -> dict:
         record_id=None if kind is None else kind[1],
         # Inline text can hold anything, so a viewer sees the hash and metadata only.
         content_text=evidence.content_text if user.role in (ADMIN, REVIEWER) else None,
-        control_ids=[],
+        control_ids=controls.get(evidence.id, []),
         current_verification=record.status,
         latest_verification=(None if record.latest is None
                              else _verification_out(evidence, record.latest)),
@@ -604,8 +621,9 @@ def evidence_list(
     with container.db.tenant_transaction(user.tenant_id) as session:
         records, total = list_evidence(session, asset_id=asset_id, category=category,
                                        status=verification, limit=limit, offset=offset)
+        controls = linked_controls(session, [record.evidence.id for record in records])
         return Page[EvidenceOut](
-            items=[EvidenceOut(**_evidence_fields(user, record)) for record in records],
+            items=[EvidenceOut(**_evidence_fields(user, record, controls)) for record in records],
             total=total, limit=limit, offset=offset,
         )
 
@@ -617,7 +635,9 @@ def evidence_create(body: EvidenceIn, user: AdminDep, container: ContainerDep):
             session, user, container.clock(), asset_id=body.asset_id, category=body.category,
             description=body.description, source=body.source, control_ids=body.control_ids,
         )
-        return EvidenceOut(**_evidence_fields(user, get_evidence(session, evidence.id)))
+        record = get_evidence(session, evidence.id)
+        return EvidenceOut(**_evidence_fields(user, record,
+                                              linked_controls(session, [evidence.id])))
 
 
 @router.get("/evidence/{id}", response_model=EvidenceDetailOut)
@@ -626,7 +646,8 @@ def evidence_detail(id: UUID, user: UserDep, container: ContainerDep):
         record = get_evidence(session, id)
         history = [_verification_out(record.evidence, item)
                    for item in verification_history(session, id)]
-        return EvidenceDetailOut(**_evidence_fields(user, record), verifications=history)
+        return EvidenceDetailOut(**_evidence_fields(user, record, linked_controls(session, [id])),
+                                 verifications=history)
 
 
 @router.post("/evidence/{id}/verify", response_model=EvidenceVerificationOut, status_code=201)
@@ -638,3 +659,86 @@ def evidence_verify(id: UUID, body: EvidenceVerifyIn, user: GovernanceReviewerDe
             note=body.note, content=body.content,
         )
         return _verification_out(get_evidence(session, id).evidence, verification)
+
+
+# Compliance
+
+
+def _assessment_fields(assessment: GovernanceControlAssessment, evidence_ids: list[UUID]) -> dict:
+    return dict(
+        id=assessment.id, status=assessment.status, note=assessment.note,
+        assessed_by=assessment.assessed_by, assessed_at=assessment.assessed_at,
+        audit_event_id=assessment.audit_event_id, evidence_ids=evidence_ids,
+    )
+
+
+def _control_out(record: ControlRecord) -> ControlOut:
+    control = record.control
+    return ControlOut(
+        id=control.id, framework_id=control.framework_id, framework_key=record.framework_key,
+        identifier=control.control_identifier, name=control.name,
+        description=control.description, source_reference=control.source_reference,
+        required_evidence=control.required_evidence, current_status=record.current_status,
+        latest_assessment=(
+            None if record.latest is None
+            else ControlAssessmentSummaryOut(
+                **_assessment_fields(record.latest, record.latest_evidence_ids))
+        ),
+        verified_evidence_count=record.verified_evidence_count,
+        linked_evidence_count=record.linked_evidence_count,
+    )
+
+
+@router.get("/frameworks", response_model=CompliancePage[FrameworkOut])
+def frameworks_list(user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        ensure_frameworks(session, user.tenant_id, container.clock())
+        items = [
+            FrameworkOut(
+                id=summary.framework.id, key=summary.framework.key,
+                version=summary.framework.version, name=summary.framework.name,
+                source_url=summary.framework.source_url,
+                source_document=summary.framework.source_document,
+                library_status=summary.framework.library_status,
+                control_count=summary.control_count,
+                source_control_count=summary.framework.source_control_count,
+                coverage=summary.coverage, status_counts=summary.status_counts,
+            )
+            for summary in list_frameworks(session)
+        ]
+        return CompliancePage[FrameworkOut](items=items, total=len(items), limit=len(items),
+                                            offset=0, statement=NO_CERTIFICATION_STATEMENT)
+
+
+@router.get("/controls", response_model=CompliancePage[ControlOut])
+def controls_list(
+    user: UserDep,
+    container: ContainerDep,
+    framework_id: UUID | None = None,
+    status: Literal["NOT_ASSESSED", "EVIDENCE_REQUIRED", "IMPLEMENTED", "PARTIALLY_IMPLEMENTED",
+                    "NOT_IMPLEMENTED", "NOT_APPLICABLE"] | None = None,
+    limit: LimitQuery = 50,
+    offset: OffsetQuery = 0,
+):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        ensure_frameworks(session, user.tenant_id, container.clock())
+        records, total = list_controls(session, framework_id=framework_id, status=status,
+                                       limit=limit, offset=offset)
+        return CompliancePage[ControlOut](
+            items=[_control_out(record) for record in records], total=total, limit=limit,
+            offset=offset, statement=NO_CERTIFICATION_STATEMENT,
+        )
+
+
+@router.post("/controls/{id}/assess", response_model=ControlAssessmentOut, status_code=201)
+def controls_assess(id: UUID, body: ControlAssessIn, user: GovernanceReviewerDep,
+                    container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        assessment = assess_control(session, user, container.clock(), id, status=body.status,
+                                    note=body.note, evidence_ids=body.evidence_ids)
+        record = get_control(session, id)
+        return ControlAssessmentOut(
+            **_assessment_fields(assessment, record.latest_evidence_ids),
+            control_id=id, current_status=record.current_status,
+            statement=NO_CERTIFICATION_STATEMENT,
+        )

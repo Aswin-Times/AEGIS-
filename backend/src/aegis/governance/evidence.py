@@ -20,8 +20,10 @@ from aegis.canonical import sha256_hex
 from aegis.db.models import (
     AiAsset,
     AuditEvent,
+    GovernanceControl,
     GovernanceDecision,
     GovernanceEvidence,
+    GovernanceEvidenceControl,
     GovernanceEvidenceVerification,
     Incident,
     InvestigationRun,
@@ -161,10 +163,11 @@ def _internal_fields(session: Session, asset_id: UUID,
 def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, asset_id: UUID,
                     category: str, description: str, source: EvidenceSource,
                     control_ids: Sequence[UUID] = ()) -> GovernanceEvidence:
-    """Add an item. It starts unverified and counts toward nothing until a reviewer verifies it."""
-    if control_ids:
-        # The link table exists, but its control foreign key and the controls arrive in Task 12.
-        raise ValidationFailed("Evidence cannot be linked to controls yet.")
+    """Add an item. It starts unverified and counts toward nothing until a reviewer verifies it.
+
+    It can be linked to controls of the tenant's library. A link supports a control's status only
+    while the item's latest verification is VERIFIED.
+    """
     if category not in CATEGORIES:
         raise ValidationFailed("Unknown evidence category.")
     if not description.strip() or len(description) > 2000:
@@ -173,6 +176,7 @@ def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, ass
         raise NotFound()
     # An asset may have no governance state yet; a retired one takes no further evidence.
     require_not_retired(lock_asset_state(session, asset_id))
+    controls = _require_controls(session, control_ids)
 
     fields: dict[str, object]
     if isinstance(source, InlineSource):
@@ -195,6 +199,12 @@ def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, ass
     )
     session.add(evidence)
     session.flush()
+    session.add_all(
+        GovernanceEvidenceControl(id=uuid4(), tenant_id=user.tenant_id, evidence_id=evidence.id,
+                                  control_id=control_id)
+        for control_id in controls
+    )
+    session.flush()
     append_event(
         session,
         user.tenant_id,
@@ -210,9 +220,23 @@ def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, ass
             "category": category,
             "source_type": source.source_type,
             "content_sha256": evidence.content_sha256,
+            "control_ids": [str(control_id) for control_id in controls],
         },
     )
     return evidence
+
+
+def _require_controls(session: Session, control_ids: Sequence[UUID]) -> list[UUID]:
+    """Each id must be a control of this tenant's library. Repeats are collapsed."""
+    unique = list(dict.fromkeys(control_ids))
+    if not unique:
+        return []
+    found = set(session.execute(
+        select(GovernanceControl.id).where(GovernanceControl.id.in_(unique))
+    ).scalars().all())
+    if len(found) != len(unique):
+        raise ValidationFailed("Each control must be a control of this tenant's library.")
+    return unique
 
 
 # Verification
@@ -427,6 +451,33 @@ def verified_categories(session: Session, asset_id: UUID) -> set[str]:
         .join(latest, latest.c.evidence_id == GovernanceEvidence.id)
         .where(GovernanceEvidence.asset_id == asset_id, latest.c.outcome == VERIFIED)
     ).scalars().all())
+
+
+def verified_control_links():
+    """Each evidence-to-control link whose evidence is currently VERIFIED, by audit sequence.
+
+    Only these support a control status that claims implementation.
+    """
+    latest = _latest_verifications()
+    return (
+        select(GovernanceEvidenceControl.control_id, GovernanceEvidenceControl.evidence_id)
+        .join(latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id)
+        .where(latest.c.outcome == VERIFIED)
+    )
+
+
+def linked_controls(session: Session, evidence_ids: Iterable[UUID]) -> dict[UUID, list[UUID]]:
+    """The controls each item is linked to, in library order."""
+    links: dict[UUID, list[UUID]] = {}
+    rows = session.execute(
+        select(GovernanceEvidenceControl.evidence_id, GovernanceEvidenceControl.control_id)
+        .join(GovernanceControl, GovernanceControl.id == GovernanceEvidenceControl.control_id)
+        .where(GovernanceEvidenceControl.evidence_id.in_(list(evidence_ids)))
+        .order_by(GovernanceControl.framework_id, GovernanceControl.position)
+    ).all()
+    for evidence_id, control_id in rows:
+        links.setdefault(evidence_id, []).append(control_id)
+    return links
 
 
 def evidence_counts(session: Session) -> tuple[int, int]:
