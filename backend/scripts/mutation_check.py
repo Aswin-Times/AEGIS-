@@ -40,6 +40,8 @@ EVIDENCE_TESTS = f"{SEC}/test_governance_evidence.py"
 COMPLIANCE = "src/aegis/governance/compliance.py"
 COMPLIANCE_TESTS = f"{SEC}/test_governance_compliance.py"
 FRAMEWORKS_MIGRATION = "migrations/versions/0012_governance_frameworks.py"
+ENFORCEMENT = "src/aegis/governance/engine/enforcement.py"
+ENFORCEMENT_TESTS = "tests/unit/test_governance_enforcement.py"
 LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
@@ -483,6 +485,27 @@ MUTATIONS = [
     Mutation("Control assessment guard trigger absent", FRAMEWORKS_MIGRATION,
              "IF NEW.status IN ('IMPLEMENTED', 'PARTIALLY_IMPLEMENTED') AND NOT EXISTS (",
              "IF false AND NOT EXISTS (", COMPLIANCE_TESTS),
+    Mutation("Retired asset allowed", ENFORCEMENT,
+             'if facts.status == "RETIRED":', "if False:", ENFORCEMENT_TESTS),
+    Mutation("Hard block ignored", ENFORCEMENT,
+             "if facts.hard_blocked:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Integrity failure ignored", ENFORCEMENT,
+             "if not facts.conditions_intact:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Approval expiry not enforced", ENFORCEMENT,
+             "facts.now >= facts.valid_until", "facts.now > facts.valid_until",
+             ENFORCEMENT_TESTS),
+    Mutation("Expiry check removed", ENFORCEMENT,
+             "if facts.valid_until is not None and facts.now >= facts.valid_until:",
+             "if False:", ENFORCEMENT_TESTS),
+    Mutation("Condition deny ignored", ENFORCEMENT,
+             "if conditions is not None and _condition_denies(conditions, action):",
+             "if False:", ENFORCEMENT_TESTS),
+    Mutation("Combine lets a governance deny loosen a policy deny", ENFORCEMENT,
+             "if evaluation.outcome is Outcome.DENY or result.reason_code is None:",
+             "if result.reason_code is None:", ENFORCEMENT_TESTS),
+    Mutation("Combine ignores a governance hold", ENFORCEMENT,
+             "if result.verdict is Verdict.HOLD and evaluation.outcome is Outcome.ALLOW:",
+             "if False:", ENFORCEMENT_TESTS),
 ]
 
 
