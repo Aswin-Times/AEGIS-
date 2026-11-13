@@ -149,6 +149,13 @@ STATEMENTS = [
     BEFORE INSERT ON governance_evidence_verifications
     FOR EACH ROW EXECUTE FUNCTION aegis_evidence_verifier_guard()
     """,
+    # The table of 0009 was left without this key until the evidence table existed. That the
+    # evidence belongs to the decision's own asset is checked by the service.
+    """
+    ALTER TABLE governance_decision_evidence
+    ADD CONSTRAINT governance_decision_evidence_evidence_fkey
+    FOREIGN KEY (tenant_id, evidence_id) REFERENCES governance_evidence (tenant_id, id)
+    """,
     *(
         statement
         for table in TABLES

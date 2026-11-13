@@ -8,7 +8,7 @@ with it says so, so an attestation is never mistaken for a checked hash.
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -29,23 +29,13 @@ from aegis.db.models import (
 )
 from aegis.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from aegis.governance.assets import lock_asset_state, require_not_retired
+from aegis.governance.policy_schema import EvidenceCategory
 from aegis.governance.risk import MethodologyIntegrityError, recomputes_to_stored_result
 from aegis.governance.roles import holds_reviewer
 from aegis.security.principals import UserPrincipal
 
-CATEGORIES = (
-    "risk_assessment",
-    "security_evaluation",
-    "architecture_documentation",
-    "data_handling_documentation",
-    "human_oversight_documentation",
-    "model_evaluation",
-    "approval_records",
-    "monitoring_records",
-    "incident_investigation_records",
-    "periodic_review_records",
-)
-Category = Literal[*CATEGORIES]
+CATEGORIES = get_args(EvidenceCategory)
+Category = EvidenceCategory
 
 # Content is capped well under the 64 KB request limit, which also carries the other fields and
 # JSON escaping. The same cap bounds the content supplied to check an external reference.
@@ -173,7 +163,7 @@ def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, ass
                     control_ids: Sequence[UUID] = ()) -> GovernanceEvidence:
     """Add an item. It starts unverified and counts toward nothing until a reviewer verifies it."""
     if control_ids:
-        # Linking to controls arrives with the control library (Task 12), which adds the table.
+        # The link table exists, but its control foreign key and the controls arrive in Task 12.
         raise ValidationFailed("Evidence cannot be linked to controls yet.")
     if category not in CATEGORIES:
         raise ValidationFailed("Unknown evidence category.")
@@ -228,12 +218,18 @@ def submit_evidence(session: Session, user: UserPrincipal, now: datetime, *, ass
 # Verification
 
 
-def verification_scope(evidence: GovernanceEvidence, method: str) -> str:
-    """What a verification by this method can have shown, for the response and the dashboard."""
+def verification_scope(evidence: GovernanceEvidence, outcome: str, method: str) -> str:
+    """What a verification can have shown, for the response and the dashboard.
+
+    A rejection runs no check. Inline text is always recomputed for a VERIFIED outcome, whatever
+    the method, because that check is free.
+    """
+    if outcome == REJECTED:
+        return "judgment_only"
+    if evidence.source_type == "inline" or method == CONTENT_RECOMPUTED:
+        return "hash_recomputed"
     if method == MANUAL_ATTESTATION:
         return "attestation_only"
-    if method == CONTENT_RECOMPUTED:
-        return "hash_recomputed"
     if evidence.incident_id is not None or evidence.investigation_run_id is not None:
         return "existence_only"
     return "record_verified"
@@ -274,7 +270,30 @@ def _check_internal_record(session: Session, evidence: GovernanceEvidence) -> No
         # No hash exists for these, so existence in this tenant is all that can be shown.
         model = Incident if kind == "incident" else InvestigationRun
         if session.get(model, record_id) is None:
-            raise NotFound()
+            raise _mismatch(f"The {kind.replace('_', ' ')}")
+
+
+def _check_submission_event(session: Session, evidence: GovernanceEvidence) -> None:
+    """The row must still say what the audit event written at submission said it did.
+
+    The event is hash-chained, so rewriting the row and its own hash together is not enough.
+    """
+    event = session.execute(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "governance.evidence_submitted",
+            AuditEvent.subject_type == "governance_evidence",
+            AuditEvent.subject_id == evidence.id,
+        )
+    ).scalars().first()
+    if event is None or compute_event_hash(event) != event.event_hash:
+        raise _mismatch("The submission record")
+    payload = event.payload
+    if (payload.get("evidence_id") != str(evidence.id)
+            or payload.get("asset_id") != str(evidence.asset_id)
+            or payload.get("category") != evidence.category
+            or payload.get("source_type") != evidence.source_type
+            or payload.get("content_sha256") != evidence.content_sha256):
+        raise _mismatch("The evidence")
 
 
 def _check_content(evidence: GovernanceEvidence, content: str | None) -> None:
@@ -296,8 +315,6 @@ def verify_evidence(session: Session, user: UserPrincipal, now: datetime, eviden
                     content: str | None = None) -> GovernanceEvidenceVerification:
     """Record a verification. A VERIFIED outcome by a checking method must pass the check, and a
     failed check refuses the call and writes nothing."""
-    if not holds_reviewer(session, user.id):
-        raise Forbidden()
     if outcome not in (VERIFIED, REJECTED):
         raise ValidationFailed("The outcome must be VERIFIED or REJECTED.")
     if not note.strip() or len(note) > 2000:
@@ -307,7 +324,12 @@ def verify_evidence(session: Session, user: UserPrincipal, now: datetime, eviden
     ).scalar_one_or_none()
     if asset_id is None:
         raise NotFound()
-    require_not_retired(lock_asset_state(session, asset_id))
+    state = lock_asset_state(session, asset_id)
+    if not holds_reviewer(session, user.id):
+        raise Forbidden()
+    # A rejection only tightens, so it is allowed on a retired asset; a verification is not.
+    if outcome == VERIFIED:
+        require_not_retired(state)
     evidence = session.get(GovernanceEvidence, evidence_id)
 
     if evidence.submitted_by == user.id:
@@ -319,11 +341,15 @@ def verify_evidence(session: Session, user: UserPrincipal, now: datetime, eviden
             evidence.source_type == "external_reference" and method == CONTENT_RECOMPUTED):
         raise ValidationFailed("Content applies only to recomputing an external reference.")
 
-    # A rejection records a judgment and needs no check to pass.
-    if outcome == VERIFIED and method == INTERNAL_CHECKED:
-        _check_internal_record(session, evidence)
-    elif outcome == VERIFIED and method == CONTENT_RECOMPUTED:
-        _check_content(evidence, content)
+    # A rejection records a judgment and needs no check to pass. A VERIFIED outcome needs the
+    # record to match its submission event, and the check its source allows: always for inline
+    # text and internal records, and for an external reference when it is recomputed.
+    if outcome == VERIFIED:
+        _check_submission_event(session, evidence)
+        if method == INTERNAL_CHECKED:
+            _check_internal_record(session, evidence)
+        elif method == CONTENT_RECOMPUTED or evidence.source_type == "inline":
+            _check_content(evidence, content)
 
     verification_id = uuid4()
     audit = append_event(
@@ -341,7 +367,7 @@ def verify_evidence(session: Session, user: UserPrincipal, now: datetime, eviden
             "asset_id": str(evidence.asset_id),
             "outcome": outcome,
             "method": method,
-            "scope": verification_scope(evidence, method),
+            "scope": verification_scope(evidence, outcome, method),
         },
     )
     verification = GovernanceEvidenceVerification(

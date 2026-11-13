@@ -568,7 +568,7 @@ def _verification_out(evidence, verification: GovernanceEvidenceVerification
         id=verification.id, evidence_id=verification.evidence_id, outcome=verification.outcome,
         method=verification.method, note=verification.note, verified_by=verification.verified_by,
         verified_at=verification.verified_at, audit_event_id=verification.audit_event_id,
-        scope=verification_scope(evidence, verification.method),
+        scope=verification_scope(evidence, verification.outcome, verification.method),
     )
 
 

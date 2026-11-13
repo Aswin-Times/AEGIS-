@@ -457,6 +457,9 @@ MUTATIONS = [
              '\n    def stored_hash(self) -> str:\n'
              '        return self.content_sha256 or sha256_hex(self.content_text)\n',
              EVIDENCE_TESTS),
+    Mutation("Evidence not anchored to its submission event", GOVERNANCE_EVIDENCE,
+             "    if outcome == VERIFIED:\n        _check_submission_event(session, evidence)\n",
+             "    if outcome == VERIFIED:\n", EVIDENCE_TESTS),
     Mutation("Unverified evidence counted as verified", GOVERNANCE_EVIDENCE,
              ".join(latest, latest.c.evidence_id == GovernanceEvidence.id)\n"
              "        .where(GovernanceEvidence.asset_id == asset_id, "

@@ -1002,7 +1002,10 @@ def test_record_decision_actor_rules(tenant, db):
 def test_record_decision_stores_conditions_policy_versions_and_evidence(tenant, db, attacker_sql):
     version_id = UUID(activate_policy(tenant))
     review = submitted(tenant)
-    evidence_id = uuid4()
+    evidence_id = UUID(tenant.created("/governance/evidence", {
+        "asset_id": review["asset_id"], "category": "monitoring_records",
+        "description": "Synthetic evidence.",
+        "source": {"source_type": "inline", "content_text": "synthetic text"}})["id"])
     now = datetime.now(UTC)
     conditions = [{"control": "monitoring", "within_days": 30}]
     with db.tenant_transaction(tenant.id) as session:

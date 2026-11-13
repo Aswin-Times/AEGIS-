@@ -191,9 +191,48 @@ def test_inline_verification_recomputes_hash(tenant, attacker_sql):
     assert (refused.status_code, error_code(refused)) == (409, "HASH_MISMATCH")
     assert_nothing_verified(tenant, attacker_sql, created["id"])
 
-    # Attesting is a different method, recorded as such, and does not claim a check.
+    # The check is free for inline text, so attesting cannot skip it.
     attested = verify(tenant, created["id"], second, method="manual_attestation")
-    assert attested.status_code == 201 and attested.json()["scope"] == "attestation_only"
+    assert (attested.status_code, error_code(attested)) == (409, "HASH_MISMATCH")
+    assert_nothing_verified(tenant, attacker_sql, created["id"])
+
+
+def test_inline_attestation_of_intact_text_reports_the_recomputed_hash(tenant):
+    second = reviewers(tenant)
+    created = evidence_of(tenant, tenant.asset()["id"])
+    attested = verify(tenant, created["id"], second, method="manual_attestation")
+    assert attested.status_code == 201, attested.text
+    assert (attested.json()["method"], attested.json()["scope"]) == (
+        "manual_attestation", "hash_recomputed")
+
+
+# 2. the check is anchored to the audit event written at submission
+
+
+def test_rewriting_text_and_hash_together_is_caught_by_the_submission_event(tenant, attacker_sql):
+    second = reviewers(tenant)
+    created = evidence_of(tenant, tenant.asset()["id"])
+    forged = "rewritten with a matching hash"
+    tamper(attacker_sql, "governance_evidence",
+           "UPDATE governance_evidence SET content_text = %s, content_sha256 = %s WHERE id = %s",
+           (forged, sha256_hex(forged), created["id"]))
+    for method in ("content_recomputed", "manual_attestation"):
+        refused = verify(tenant, created["id"], second, method=method)
+        assert (refused.status_code, error_code(refused)) == (409, "HASH_MISMATCH"), method
+    assert_nothing_verified(tenant, attacker_sql, created["id"])
+
+
+def test_rewriting_the_category_is_caught_by_the_submission_event(tenant, attacker_sql):
+    second = reviewers(tenant)
+    created = evidence_of(tenant, tenant.asset()["id"], category="monitoring_records")
+    tamper(attacker_sql, "governance_evidence",
+           "UPDATE governance_evidence SET category = 'model_evaluation' WHERE id = %s",
+           (created["id"],))
+    refused = verify(tenant, created["id"], second)
+    assert (refused.status_code, error_code(refused)) == (409, "HASH_MISMATCH")
+    assert_nothing_verified(tenant, attacker_sql, created["id"])
+    # A rejection only tightens, so it needs no intact record.
+    assert verify(tenant, created["id"], second, outcome="REJECTED").status_code == 201
 
 
 def test_external_reference_with_content_checks_hash(tenant, attacker_sql):
@@ -242,7 +281,10 @@ def test_a_rejection_needs_no_passing_check(tenant, attacker_sql):
     created = evidence_of(tenant, tenant.asset()["id"], external("alpha"))
     rejected = verify(tenant, created["id"], second, outcome="REJECTED", content=None)
     assert rejected.status_code == 201
+    assert rejected.json()["scope"] == "judgment_only"
     assert current(tenant, created["id"]) == "REJECTED"
+    detail = tenant.get(f"{EVIDENCE}/{created['id']}").json()
+    assert detail["latest_verification"]["scope"] == "judgment_only"
 
 
 # Internal records
@@ -330,6 +372,22 @@ def test_incident_and_investigation_run_prove_existence_only(world, tenant):
         assert response.json()["scope"] == "existence_only", kind
 
 
+def test_a_vanished_incident_is_a_hash_mismatch(world, tenant, attacker_sql):
+    second = reviewers(tenant)
+    incident = make_incident(world, tenant)
+    created = evidence_of(tenant, tenant.asset()["id"], internal("incident", incident["id"]),
+                          category="incident_investigation_records")
+    # Delete it as a superuser, with foreign keys and triggers off.
+    attacker_sql.execute("SET session_replication_role = replica")
+    try:
+        attacker_sql.execute("DELETE FROM incidents WHERE id = %s", (incident["id"],))
+    finally:
+        attacker_sql.execute("SET session_replication_role = DEFAULT")
+    refused = verify(tenant, created["id"], second, method="internal_record_checked")
+    assert (refused.status_code, error_code(refused)) == (409, "HASH_MISMATCH")
+    assert verification_rows(attacker_sql, created["id"]) == []
+
+
 def test_internal_record_must_belong_to_this_asset(tenant):
     reviewers(tenant)
     mine, other = assessed_asset(tenant), assessed_asset(tenant)
@@ -372,6 +430,21 @@ def test_evidence_cannot_reference_another_tenants_record(world, db):
 
 
 # Ordering
+
+
+def test_a_decision_can_name_only_real_evidence(db, tenant):
+    reviewers(tenant)
+    review = submitted(tenant)
+    decision = decision_id_of(tenant, review["asset_id"])
+    real = evidence_of(tenant, review["asset_id"])
+    insert = text("INSERT INTO governance_decision_evidence (id, tenant_id, decision_id, "
+                  "evidence_id) VALUES (:id, :tenant, :decision, :evidence)")
+    with pytest.raises(DBAPIError), db.tenant_transaction(tenant.id) as session:
+        session.execute(insert, {"id": uuid4(), "tenant": tenant.id, "decision": decision,
+                                 "evidence": uuid4()})
+    with db.tenant_transaction(tenant.id) as session:
+        session.execute(insert, {"id": uuid4(), "tenant": tenant.id, "decision": decision,
+                                 "evidence": real["id"]})
 
 
 def test_latest_verification_wins_by_audit_sequence(world, tenant):
@@ -455,6 +528,9 @@ def test_evidence_on_retired_asset_refused(tenant, attacker_sql):
     refused = verify(tenant, earlier["id"], second)
     assert (refused.status_code, error_code(refused)) == (409, "ASSET_RETIRED")
     assert verification_rows(attacker_sql, earlier["id"]) == []
+    # A rejection only tightens, so it is still allowed.
+    assert verify(tenant, earlier["id"], second, outcome="REJECTED").status_code == 201
+    assert current(tenant, earlier["id"]) == "REJECTED"
     # History stays readable.
     assert tenant.get(f"{EVIDENCE}/{earlier['id']}").status_code == 200
     assert tenant.get(EVIDENCE, asset_id=asset).json()["total"] == 1
