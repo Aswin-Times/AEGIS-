@@ -112,6 +112,7 @@ export function ConditionsFields({
           type="checkbox"
           name="hold_all"
           checked={values.hold_all}
+          aria-invalid={groupError || undefined}
           aria-describedby={groupError ? GROUP_ERROR : undefined}
           onChange={(event) => set({ hold_all: event.target.checked })}
         />

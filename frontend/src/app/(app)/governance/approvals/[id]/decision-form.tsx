@@ -81,7 +81,6 @@ export function DecisionForm({
   const [result, setResult] = useState<DecisionFormState>({});
   const root = useRef<HTMLDivElement>(null);
   const alert = useRef<HTMLParagraphElement>(null);
-  const sending = useRef(false);
   const errors = result.fieldErrors ?? {};
   const approving = kind === "approve" || kind === "approve_conditional";
 
@@ -96,19 +95,14 @@ export function DecisionForm({
     (target ?? alert.current)?.focus();
   }, [result]);
 
-  /** One request at a time: a second confirmation while one is in flight is ignored. */
+  // Double submission is stopped by the disabled confirm button, and by the API, which refuses
+  // a second decision on a closed review or a second vote from the same person.
   const run =
     (action: (state: DecisionFormState, data: FormData) => Promise<DecisionFormState>) =>
     async (_: ActionState, data: FormData): Promise<ActionState> => {
-      if (sending.current) return {};
-      sending.current = true;
-      try {
-        const outcome = await action({}, data);
-        setResult(outcome);
-        if (outcome.saved) setReason("");
-      } finally {
-        sending.current = false;
-      }
+      const outcome = await action({}, data);
+      setResult(outcome);
+      if (outcome.saved) setReason("");
       // The outcome, refusals included, is shown on the page, so the dialog always closes.
       return {};
     };
@@ -224,7 +218,7 @@ export function DecisionForm({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               label="Valid until (UTC)"
-              hint="The approval ends here. The gateway denies after this time."
+              hint="The approval ends here. In enforce mode the gateway denies after this time. In observe mode the expiry is recorded, not blocked."
               error={errors.valid_until}
             >
               {({ id, describedBy, invalid }) => (
@@ -282,6 +276,7 @@ export function DecisionForm({
                       <input
                         type="checkbox"
                         name="evidence_ids"
+                        aria-invalid={errors.evidence_ids ? true : undefined}
                         checked={cited.includes(item.id)}
                         onChange={(event) =>
                           setCited((previous) =>

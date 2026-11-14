@@ -67,7 +67,7 @@ export default async function PoliciesPage() {
       />
       <p className="mb-3 max-w-3xl text-sm text-muted">
         These are this organization&apos;s own rules, checked against asset profiles when a review
-        is submitted. An active version is not a statement that any asset complies with it, or with
+        is submitted. Active means approved and switched on; a version applies only from its effective date. An active version is not a statement that any asset complies with it, or with
         any standard. The API does not say whether an approved version that is not active was never
         activated or was deactivated. Policies and new versions are created through the API.
       </p>

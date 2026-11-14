@@ -147,8 +147,9 @@ export function FrozenProfile({
           The asset&apos;s profile has changed since this review was submitted
           {asset.profile ? ` (it is now version ${asset.profile.version})` : ""}. The API returns
           only the current profile, so the frozen content is not shown. An approval of this
-          review is refused with ASSESSMENT_NOT_CURRENT until the asset is resubmitted. Rejecting
-          is still possible.
+          review is refused with ASSESSMENT_NOT_CURRENT. The asset can be resubmitted only
+          after information is requested on this review (use request information), or this review
+          can be rejected.
         </p>
       ) : (
         <ProfileSummary asset={asset} />

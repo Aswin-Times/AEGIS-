@@ -56,8 +56,8 @@ export function VersionActions({
           fields={fields}
         >
           <p>
-            Once active, this version applies to new submissions it covers. Activating it does
-            not deactivate an older version: where both apply, the most restrictive requirement
+            Once active, this version applies to new submissions it covers, but only from its
+            effective date. Activating it does not deactivate an older version: where both apply, the most restrictive requirement
             wins.
           </p>
         </ConfirmAction>

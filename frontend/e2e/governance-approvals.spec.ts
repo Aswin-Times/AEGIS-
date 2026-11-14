@@ -235,6 +235,9 @@ test("reviewer approves with dates, and history shows the decision", async ({ pa
   const { assetId, review } = await submitted();
   await open(page, "reviewer", review.id);
 
+  // Expiry is enforced only in enforce mode, so the hint names both modes.
+  const dates = page.getByText("In enforce mode the gateway denies after this time");
+  await expect(dates).toContainText("In observe mode the expiry is recorded, not blocked");
   await fillApproval(page, "Synthetic approval reason");
   await confirm(page, "Approve this review", "Confirm approval");
   await expect(page.getByRole("status")).toContainText("Decision recorded");
@@ -271,6 +274,7 @@ test("conditional approval requires conditions, and labels advisory ones not enf
   await expect(page.getByText("Add at least one condition")).toBeVisible();
   await expect(conditions).toHaveAttribute("aria-invalid", "true");
   expect(await describedText(page, conditions)).toContain("Add at least one condition");
+  await expect(page.getByLabel("Hold every action for approval")).toHaveAttribute("aria-invalid", "true");
   const before = await get<{ items: { kind: string | null }[] }>(`/governance/assets/${assetId}/history`);
   expect(before.items.filter((item) => item.kind === "APPROVE_CONDITIONAL")).toHaveLength(0);
   const after = await get<Review>(`/governance/approvals/${review.id}`);
@@ -329,7 +333,7 @@ test("conditions of an earlier vote are shown and bind the next approval", async
       },
       "admin2",
     );
-    expect(expected.code).toBe("CONDITIONS_MISMATCH");
+    expect(expected).toMatchObject({ status: 409, code: "CONDITIONS_MISMATCH" });
     await expect(page.getByRole("alert").filter({ hasText: expected.message })).toBeVisible();
 
     // The conditional form starts from the bound conditions, so the same ones can be carried.
@@ -458,6 +462,8 @@ test("a profile change after submission shows the not-current refusal", async ({
   await open(page, "reviewer", review.id);
   // The frozen state is shown as frozen, with what changed since.
   await expect(region(page, "Frozen profile")).toContainText("profile has changed since");
+  // A refused review is resubmitted only after information is requested, or rejected.
+  await expect(region(page, "Frozen profile")).toContainText("request information");
   await fillApproval(page, "Synthetic approval of a stale review");
   await confirm(page, "Approve this review", "Confirm approval");
   const expected = await refusal(
@@ -469,7 +475,7 @@ test("a profile change after submission shows the not-current refusal", async ({
     },
     "reviewer",
   );
-  expect(expected.code).toBe("ASSESSMENT_NOT_CURRENT");
+  expect(expected).toMatchObject({ status: 409, code: "ASSESSMENT_NOT_CURRENT" });
   await expect(page.getByRole("alert").filter({ hasText: expected.message })).toBeVisible();
   expect((await get<Review>(`/governance/approvals/${review.id}`)).status).toBe("OPEN");
 });
@@ -507,21 +513,22 @@ test("approval list filters by status", async ({ page }) => {
 });
 
 test("policy library shows versions, status, applicability, and approver", async ({ page }) => {
-  const policy = await activePolicy({ required_human_oversight: ["in_the_loop"] });
   const draftName = `synthetic-approval-draft-${randomUUID().slice(0, 8)}`;
-  const draft = await post<{ id: string }>("/governance/policies", { name: draftName, category: "general" });
-  await post(`/governance/policies/${draft.id}/versions`, {
-    document: { description: "Synthetic draft", severity: "low" },
-    effective_from: new Date(Date.now() - 3_600_000).toISOString(),
-  });
+  let policy: Awaited<ReturnType<typeof activePolicy>> | undefined;
   try {
+    policy = await activePolicy({ required_human_oversight: ["in_the_loop"] });
+    const draft = await post<{ id: string }>("/governance/policies", { name: draftName, category: "general" });
+    await post(`/governance/policies/${draft.id}/versions`, {
+      document: { description: "Synthetic draft", severity: "low" },
+      effective_from: new Date(Date.now() - 3_600_000).toISOString(),
+    });
     const people = await get<{ items: { id: string; email: string }[] }>("/governance/people");
     const reviewer = people.items.find((item) => item.email.startsWith("reviewer@"))!;
 
     // reviewer2 may list people but holds no role, so it sees emails and no controls.
     await tenant.signIn(page, "reviewer2");
     await page.goto("/governance/policies");
-    const active = page.getByRole("row").filter({ hasText: policy.name });
+    const active = page.getByRole("row").filter({ hasText: policy!.name });
     await expect(active).toContainText("Version 1");
     await expect(active).toContainText("Active");
     await expect(active).toContainText("Model provider");
@@ -535,14 +542,16 @@ test("policy library shows versions, status, applicability, and approver", async
     await expect(drafted).toContainText("Not approved");
     await expect(drafted).toContainText("Applies to every asset");
     await expect(page.getByText("not a statement that any asset complies")).toBeVisible();
+    // Active means switched on, and a version applies only from its effective date.
+    await expect(page.getByText("applies only from its effective date")).toBeVisible();
 
     // A viewer reads the library too, and has no controls either.
     await tenant.signIn(page, "viewer");
     await page.goto("/governance/policies");
-    await expect(page.getByRole("row").filter({ hasText: policy.name })).toContainText("Active");
+    await expect(page.getByRole("row").filter({ hasText: policy!.name })).toContainText("Active");
     await expect(page.getByRole("button", { name: /^(Approve|Activate|Deactivate) / })).toHaveCount(0);
   } finally {
-    await policy.deactivate();
+    await policy?.deactivate();
   }
 });
 
@@ -583,6 +592,7 @@ test("author cannot approve their own policy version", async ({ page }) => {
     await tenant.signIn(page, "admin");
     await page.goto("/governance/policies");
     await page.getByRole("button", { name: `Activate ${name} version 1`, exact: true }).click();
+    await expect(page.getByRole("dialog")).toContainText("only from its effective date");
     await page.getByRole("button", { name: "Confirm activation", exact: true }).click();
     await expect(row).toContainText("Active");
     await page.getByRole("button", { name: `Deactivate ${name} version 1`, exact: true }).click();
