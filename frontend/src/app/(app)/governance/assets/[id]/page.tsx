@@ -9,12 +9,13 @@ import {
   StatusBadge,
   Table,
 } from "@/components/ui";
+import { EvidenceTable } from "@/components/evidence-table";
 import { PermissionDenied } from "@/components/permission-denied";
+import { allPages } from "@/lib/all-pages";
 import { ApiError, api } from "@/lib/api";
 import { formatTime, humanize, shortId } from "@/lib/format";
 import type {
   AssetDetail,
-  AssetProfile,
   CompliancePage,
   Control,
   Evidence,
@@ -30,39 +31,9 @@ import type { Me, Page } from "@/lib/types";
 import { AssessForm } from "./assess-form";
 import { AssetSummary, staleNote } from "./asset-summary";
 import { ProfileForm } from "./profile-form";
+import { ProfileSummary } from "./profile-summary";
 
 export const metadata = { title: "AI asset | AEGIS" };
-
-const PROFILE_ROWS: [keyof AssetProfile, string][] = [
-  ["asset_type", "Asset type"],
-  ["description", "Description"],
-  ["business_purpose", "Business purpose"],
-  ["intended_use", "Intended use"],
-  ["prohibited_use", "Prohibited use"],
-  ["responsible_team", "Responsible team"],
-  ["model_provider", "Model provider"],
-  ["model_name", "Model name"],
-  ["model_version", "Model version"],
-  ["deployment_environment", "Deployment environment"],
-  ["data_categories", "Data categories"],
-  ["external_exposure", "External exposure"],
-  ["external_integrations", "External integrations"],
-  ["autonomy_level", "Autonomy level"],
-  ["human_oversight", "Human oversight"],
-  ["declared_tool_access", "Declared tool access"],
-  ["impact_level", "Impact level"],
-  ["third_party_reliance", "Third-party reliance"],
-  ["evidence_references", "Evidence references"],
-];
-const VOCABULARY_FIELDS = new Set<keyof AssetProfile>([
-  "asset_type",
-  "deployment_environment",
-  "external_exposure",
-  "autonomy_level",
-  "human_oversight",
-  "impact_level",
-  "third_party_reliance",
-]);
 
 const LIBRARY_STATUS: Record<string, string> = {
   NOT_LOADED: "Not loaded",
@@ -70,75 +41,11 @@ const LIBRARY_STATUS: Record<string, string> = {
   LOADED: "Loaded",
 };
 
-// What a verification can have shown. A claim is never stronger than the check that ran.
-const SCOPE: Record<string, string> = {
-  hash_recomputed: "The hash was recomputed from the content and matched.",
-  record_verified: "The internal record exists in this organization and its hash still verifies.",
-  existence_only: "Existence only. The record exists, but its content was not recomputed.",
-  attestation_only:
-    "Manual attestation. Nothing was recomputed. A reviewer states that this is so.",
-  judgment_only: "A reviewer rejected this evidence. No check was run.",
-};
-
-const SOURCE: Record<string, string> = {
-  internal_record: "Internal record",
-  inline: "Inline text",
-  external_reference: "External reference",
-};
-
-/** Every page of a list, 100 at a time. A page that stops at the first 100 would hide the rest. */
-async function allPages<P extends Page<{ id: string }>>(path: string): Promise<P> {
-  const first = await api<P>(`${path}${path.includes("?") ? "&" : "?"}limit=100`);
-  const items = [...first.items];
-  while (items.length < first.total && items.length % 100 === 0) {
-    const more = await api<P>(
-      `${path}${path.includes("?") ? "&" : "?"}limit=100&offset=${items.length}`,
-    );
-    if (more.items.length === 0) break;
-    items.push(...more.items);
-  }
-  return { ...first, items };
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
       <Panel title={title}>{children}</Panel>
     </div>
-  );
-}
-
-function profileValue(
-  name: keyof AssetProfile,
-  profile: AssetProfile,
-  asset: AssetDetail,
-): string | null {
-  if (name === "business_owner_id") return asset.business_owner?.email ?? null;
-  if (name === "technical_owner_id") return asset.technical_owner?.email ?? null;
-  const value = profile[name];
-  if (value === undefined) return null;
-  if (Array.isArray(value)) return value.length ? value.map(humanizeIfCode).join(", ") : null;
-  return VOCABULARY_FIELDS.has(name) ? humanize(value) : value;
-}
-
-const humanizeIfCode = (value: string) => (/^[a-z_]+$/.test(value) ? humanize(value) : value);
-
-function ProfileSummary({ asset }: { asset: AssetDetail }) {
-  const profile = asset.profile?.profile ?? {};
-  return (
-    <dl className="grid gap-x-6 gap-y-2 p-3 sm:grid-cols-2">
-      {PROFILE_ROWS.map(([name, label]) => {
-        const value = profileValue(name, profile, asset);
-        return (
-          <div key={name}>
-            <dt className="text-xs text-muted">{label}</dt>
-            <dd className="whitespace-pre-wrap break-words">
-              {value ?? <span className="text-muted">Not stated</span>}
-            </dd>
-          </div>
-        );
-      })}
-    </dl>
   );
 }
 
@@ -183,60 +90,6 @@ function historyDetail(entry: HistoryEntry) {
     );
   }
   return null;
-}
-
-function EvidenceTable({ items }: { items: Evidence[] }) {
-  if (items.length === 0) {
-    return (
-      <EmptyState
-        title="No evidence recorded"
-        detail="Evidence submitted for this asset, and how it was checked, is listed here."
-      />
-    );
-  }
-  return (
-    <Table head={["Evidence", "Category", "Source", "Verification", "How it was checked"]}>
-      {items.map((item) => {
-        const check = item.latest_verification;
-        return (
-          <tr key={item.id}>
-            <Cell>{item.description}</Cell>
-            <Cell>{humanize(item.category)}</Cell>
-            <Cell>
-              {SOURCE[item.source_type] ?? item.source_type}
-              {item.record_type && (
-                <div className="text-xs text-muted">{humanize(item.record_type)}</div>
-              )}
-              {item.source_uri && (
-                <div className="break-all text-xs text-muted">{item.source_uri}</div>
-              )}
-              {item.content_sha256 && (
-                <div className="font-mono text-xs text-muted">
-                  {item.source_type === "external_reference" ? "declared hash " : "hash "}
-                  {item.content_sha256.slice(0, 12)}
-                </div>
-              )}
-            </Cell>
-            <Cell>
-              <StatusBadge value={item.current_verification} />
-              {check && <div className="mt-1 text-xs text-muted">{formatTime(check.verified_at)}</div>}
-            </Cell>
-            <Cell>
-              {check ? (
-                <>
-                  <div>Method: {humanize(check.method)}</div>
-                  <div className="text-xs">{SCOPE[check.scope] ?? humanize(check.scope)}</div>
-                  <div className="text-xs text-muted">Note: {check.note}</div>
-                </>
-              ) : (
-                <span className="text-muted">Not checked</span>
-              )}
-            </Cell>
-          </tr>
-        );
-      })}
-    </Table>
-  );
 }
 
 async function load(id: string) {

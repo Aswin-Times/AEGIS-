@@ -224,29 +224,53 @@ export type Methodology = {
 
 // Policies, reviews, history
 
+export type PolicyDocument = {
+  description: string;
+  severity: string;
+  applicability?: {
+    risk_levels?: string[];
+    asset_types?: string[];
+    environments?: string[];
+    data_categories?: string[];
+  };
+  controls?: Record<string, unknown>;
+};
+
 export type PolicyVersion = {
   id: string;
   policy_id: string;
   version: number;
+  content_hash: string;
   effective_from: string;
   review_by: string | null;
+  created_by: string;
+  created_at: string;
   approved: boolean;
+  approved_by: string | null;
+  approved_at: string | null;
   active: boolean;
-  document: { description: string; severity: string };
+  document: PolicyDocument;
 };
 
 export type GovernancePolicy = {
   id: string;
   name: string;
   category: string;
+  created_by: string;
+  created_at: string;
   versions: PolicyVersion[];
 };
 
 export type Review = {
   id: string;
   asset_id: string;
+  assessment_id: string;
+  profile_version_id: string;
+  submitted_by: string;
+  assigned_reviewer: string | null;
   status: string;
   required_approvers: number;
+  version: number;
   submitted_at: string;
   closed_at: string | null;
   // What the policy engine asked for when the review was opened, frozen at that moment.
@@ -254,6 +278,9 @@ export type Review = {
     applicable_version_ids: string[];
     required_controls: { policy_version_id: string; control: string; value: unknown }[];
     minimum_approvers: number;
+    // Frozen too. Silence in every policy means not permitted.
+    self_approval_permitted: boolean;
+    owner_approval_permitted: boolean;
   };
   findings: {
     policy_version_id: string | null;
@@ -263,14 +290,34 @@ export type Review = {
   }[];
 };
 
+// The closed set of conditions an approval can carry. Backend: governance/conditions.py.
+export type Conditions = {
+  denied_tools: string[];
+  held_tools: string[];
+  denied_actions: string[];
+  hold_all: boolean;
+  max_resource_classification: string | null;
+  advisory_conditions: string[];
+};
+
+export const RESOURCE_CLASSIFICATIONS = ["public", "internal", "sensitive"] as const;
+
 export type AssetDecision = {
   id: string;
+  review_id: string | null;
   kind: string;
   from_status: string;
   to_status: string;
   actor_type: string;
+  decided_by: string | null;
   decided_at: string;
   reason: string;
+  conditions: Conditions | null;
+  conditions_hash: string | null;
+  valid_until: string | null;
+  next_review_at: string | null;
+  policy_version_ids: string[];
+  evidence_ids: string[];
 };
 
 export type ProfileVersionSummary = {
@@ -367,4 +414,13 @@ export type ProfileFormState = {
   saved?: string;
   // What was submitted, so a refused form keeps the values that were typed.
   values?: Record<string, string | string[]>;
+};
+
+// Shown by the decision forms. Field errors are keyed by the form's field names.
+export type DecisionFormState = {
+  error?: string;
+  // The API's own error code, such as ASSESSMENT_NOT_CURRENT or SELF_APPROVAL_REFUSED.
+  code?: string;
+  fieldErrors?: Record<string, string>;
+  saved?: string;
 };

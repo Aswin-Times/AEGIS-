@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -100,4 +101,55 @@ export async function waitForIncident(agentId: string, headers: Record<string, s
     )
     .toBe(true);
   return found as { id: string; version: number };
+}
+
+export type Tenant = {
+  slug: string;
+  headers: (user: string) => Promise<Record<string, string>>;
+  signIn: (page: Page, user: string) => Promise<void>;
+};
+
+/**
+ * A synthetic tenant of its own with admin, admin2, reviewer, reviewer2, and viewer, so approval
+ * tests never change the demo tenant. Tenants cannot be deleted, which is why it is created once
+ * per spec file.
+ */
+export function newGovernanceTenant(): Tenant {
+  const slug = `synthetic-approvals-${randomUUID().slice(0, 8)}`;
+  const password = randomUUID();
+  const python =
+    process.platform === "win32"
+      ? path.join(__dirname, "../../backend/.venv/Scripts/python.exe")
+      : path.join(__dirname, "../../backend/.venv/bin/python");
+  // The arguments hold the new password, so they are kept out of any error thrown here.
+  try {
+    execFileSync(python, [path.join(__dirname, "provision_governance_tenant.py"), slug, password], {
+      stdio: "pipe",
+    });
+  } catch (error) {
+    const stderr = String((error as { stderr?: Buffer }).stderr ?? "").trim();
+    throw new Error(`Could not provision the approval tenant. ${stderr}`);
+  }
+  return {
+    slug,
+    headers: async (user) => {
+      const response = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenant_slug: slug, email: email(user), password }),
+      });
+      expect(response.status).toBe(200);
+      const { access_token: token } = (await response.json()) as { access_token: string };
+      return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    },
+    signIn: async (page, user) => {
+      await page.context().clearCookies();
+      await page.goto("/login");
+      await page.getByLabel("Organization").fill(slug);
+      await page.getByLabel("Email").fill(email(user));
+      await page.getByLabel("Password").fill(password);
+      await page.getByRole("button", { name: "Sign in" }).click();
+      await expect(page).toHaveURL(/\/overview$/);
+    },
+  };
 }

@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 const ITEMS = [
   { href: "/governance", label: "Overview", exact: true },
   { href: "/governance/assets", label: "Inventory", exact: false },
+  { href: "/governance/approvals", label: "Approval Center", exact: false },
+  { href: "/governance/policies", label: "Policy library", exact: false },
 ];
 
 export function GovernanceNav() {

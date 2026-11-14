@@ -72,6 +72,14 @@ const STATUS: Record<string, { tone: Tone; icon: LucideIcon; label: string }> = 
   INCOMPLETE: { tone: "hold", icon: FileQuestion, label: "Incomplete" },
   VERIFIED: { tone: "allow", icon: CheckCircle2, label: "Verified" },
   UNVERIFIED: { tone: "neutral", icon: Circle, label: "Unverified" },
+  // Review statuses. A review is OPEN until a decision closes it, so it is not an alarm.
+  AWAITING_DECISION: { tone: "hold", icon: Clock, label: "Awaiting decision" },
+  INFO_REQUESTED: { tone: "hold", icon: FileQuestion, label: "Information requested" },
+  DECIDED: { tone: "neutral", icon: CheckCircle2, label: "Decided" },
+  WITHDRAWN: { tone: "neutral", icon: XCircle, label: "Withdrawn" },
+  // A policy version that is approved but not in force. The API does not say whether it was
+  // never activated or was deactivated.
+  APPROVED_NOT_ACTIVE: { tone: "neutral", icon: CheckCircle2, label: "Approved, not active" },
   // Control statuses.
   IMPLEMENTED: { tone: "allow", icon: CheckCircle2, label: "Implemented" },
   PARTIALLY_IMPLEMENTED: { tone: "hold", icon: AlertTriangle, label: "Partially implemented" },
