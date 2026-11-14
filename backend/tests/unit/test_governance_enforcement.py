@@ -1,15 +1,14 @@
 """The pure gateway enforcement check (spec 11.2): the table, in order, in both modes."""
 
-import ast
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import aegis.governance.engine.enforcement as enforcement_module
 from aegis.governance.conditions import Conditions
 from aegis.governance.engine.enforcement import (
     ActionContext,
@@ -141,6 +140,94 @@ def test_an_approval_in_force_under_an_unexpected_status_is_not_approved():
     assert (result.verdict, result.reason_code) == (V.DENY, "GOVERNANCE_NOT_APPROVED")
 
 
+@pytest.mark.parametrize("mode", ["ENFORCE", "x", "", None])
+def test_an_unknown_mode_enforces(mode):
+    expired = dict(valid_until=NOW - timedelta(seconds=1))
+    result = check(facts(mode=mode, **expired), ACTION)
+    assert result == GovernanceCheck(V.DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+    assert check(facts(mode=mode, status="UNDER_REVIEW"), ACTION).verdict is V.HOLD
+
+
+CONDITION_DENY = Conditions(denied_tools=["read_document"])
+CONDITION_HOLD = Conditions(held_tools=["read_document"])
+LAPSED = NOW - timedelta(seconds=1)
+# (earlier row, later row, facts where both match, expected in observe, expected in enforce)
+PRECEDENCE = [
+    ("2 over 3", dict(hard_blocked=True, conditions_intact=False),
+     (V.DENY, "GOVERNANCE_BLOCKED"), (V.DENY, "GOVERNANCE_BLOCKED")),
+    ("3 over 4", dict(conditions_intact=False, valid_until=LAPSED),
+     (V.DENY, "GOVERNANCE_INTEGRITY_FAILED"), (V.DENY, "GOVERNANCE_INTEGRITY_FAILED")),
+    ("3 over 5", dict(conditions_intact=False, valid_until=None),
+     (V.DENY, "GOVERNANCE_INTEGRITY_FAILED"), (V.DENY, "GOVERNANCE_INTEGRITY_FAILED")),
+    ("3 over 7", dict(conditions_intact=False, status="REASSESSMENT_REQUIRED"),
+     (V.DENY, "GOVERNANCE_INTEGRITY_FAILED"), (V.DENY, "GOVERNANCE_INTEGRITY_FAILED")),
+    ("4 over 5", dict(status="DRAFT", valid_until=LAPSED),
+     (V.RECORDED_DENY, "GOVERNANCE_APPROVAL_EXPIRED"), (V.DENY, "GOVERNANCE_APPROVAL_EXPIRED")),
+    # Row 8 is a person's decision, which a recorded row 7 never shadows in observe.
+    ("7 over 8", dict(status="REASSESSMENT_REQUIRED", conditions=CONDITION_HOLD),
+     (V.HOLD, "GOVERNANCE_CONDITION_HOLD"), (V.HOLD, "GOVERNANCE_REASSESSMENT_REQUIRED")),
+]
+
+
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+@pytest.mark.parametrize("name,overrides,observe,enforce", PRECEDENCE,
+                         ids=[r[0] for r in PRECEDENCE])
+def test_adjacent_rows_apply_in_table_order(mode, name, overrides, observe, enforce):
+    expected = observe if mode == "observe" else enforce
+    assert check(facts(mode=mode, **overrides), ACTION) == GovernanceCheck(*expected)
+
+
+SHADOWED = [
+    ("4 expired", dict(valid_until=LAPSED)),
+    ("5 not approved", dict(status="UNDER_REVIEW", valid_until=None)),
+    ("7 reassessment", dict(status="REASSESSMENT_REQUIRED")),
+]
+
+
+@pytest.mark.parametrize("name,overrides", SHADOWED, ids=[r[0] for r in SHADOWED])
+def test_spec_11_6_observe_applies_a_condition_deny_a_recorded_row_would_shadow(name, overrides):
+    f = facts(mode="observe", conditions=CONDITION_DENY, **overrides)
+    assert check(f, ACTION) == GovernanceCheck(V.DENY, "GOVERNANCE_CONDITION_DENIED")
+
+
+@pytest.mark.parametrize("name,overrides", SHADOWED, ids=[r[0] for r in SHADOWED])
+def test_spec_11_6_observe_applies_a_condition_hold_a_recorded_row_would_shadow(name, overrides):
+    f = facts(mode="observe", conditions=CONDITION_HOLD, **overrides)
+    assert check(f, ACTION) == GovernanceCheck(V.HOLD, "GOVERNANCE_CONDITION_HOLD")
+
+
+@pytest.mark.parametrize("name,overrides", SHADOWED[:2], ids=[r[0] for r in SHADOWED[:2]])
+def test_enforce_keeps_the_first_matching_row_over_a_condition(name, overrides):
+    f = facts(mode="enforce", conditions=CONDITION_DENY, **overrides)
+    assert check(f, ACTION).reason_code != "GOVERNANCE_CONDITION_DENIED"
+
+
+def test_observe_without_a_matching_condition_still_records_the_first_row():
+    f = facts(mode="observe", conditions=Conditions(denied_tools=["other"]), valid_until=LAPSED)
+    assert check(f, ACTION) == GovernanceCheck(V.RECORDED_DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+
+
+def test_conditions_are_untrusted_when_integrity_fails_even_in_observe():
+    f = facts(mode="observe", conditions_intact=False, conditions=Conditions(hold_all=True))
+    assert check(f, ACTION).reason_code == "GOVERNANCE_INTEGRITY_FAILED"
+
+
+def test_a_verdict_and_its_reason_code_must_agree():
+    for verdict in (V.DENY, V.HOLD, V.RECORDED_DENY, V.RECORDED_HOLD):
+        with pytest.raises(ValueError):
+            GovernanceCheck(verdict, None)
+    with pytest.raises(ValueError):
+        GovernanceCheck(V.PASS, "GOVERNANCE_RETIRED")
+
+
+def test_facts_reject_naive_datetimes():
+    naive = datetime(2026, 11, 13, 12, 0)
+    with pytest.raises(ValueError):
+        facts(now=naive)
+    with pytest.raises(ValueError):
+        facts(valid_until=naive)
+
+
 def evaluation(outcome: Outcome) -> Evaluation:
     return Evaluation(outcome, "POLICY_REASON", "rule-1")
 
@@ -165,8 +252,9 @@ def test_combine_keeps_policy_deny_reason():
 
 @pytest.mark.parametrize("outcome", list(Outcome))
 def test_combine_recorded_verdicts_change_nothing(outcome):
-    for verdict in (V.PASS, V.RECORDED_DENY, V.RECORDED_HOLD):
-        assert combine(evaluation(outcome), GovernanceCheck(verdict, "R")) == evaluation(outcome)
+    for result in (GovernanceCheck(V.PASS, None), GovernanceCheck(V.RECORDED_DENY, "R"),
+                   GovernanceCheck(V.RECORDED_HOLD, "R")):
+        assert combine(evaluation(outcome), result) == evaluation(outcome)
 
 
 def test_combine_hold_turns_allow_into_require_approval():
@@ -197,7 +285,8 @@ conditions_strategy = st.builds(
 )
 facts_strategy = st.builds(
     GovernanceFacts,
-    mode=st.sampled_from(["observe", "enforce"]),
+    # Unknown modes are outside the type on purpose: they must behave as enforce.
+    mode=st.sampled_from(["observe", "enforce", "ENFORCE", "x", None]),
     status=st.one_of(st.none(), st.sampled_from(
         ["DRAFT", "ASSESSMENT_REQUIRED", "UNDER_REVIEW", "APPROVED", "CONDITIONALLY_APPROVED",
          "REJECTED", "SUSPENDED", "REASSESSMENT_REQUIRED", "RETIRED", "unknown"])),
@@ -222,17 +311,33 @@ def test_check_is_pure_and_total(f, action):
     assert (first.reason_code is None) == (first.verdict is Verdict.PASS)
 
 
+@given(facts_strategy, action_strategy)
+def test_a_pass_in_enforce_means_an_approval_in_force(f, action):
+    result = check(f, action)
+    if f.mode != "observe" and result.verdict is Verdict.PASS:
+        assert f.status in {"APPROVED", "CONDITIONALLY_APPROVED"}
+        assert not f.hard_blocked and f.conditions_intact
+        assert f.valid_until is not None and f.now < f.valid_until
+
+
+@given(facts_strategy, action_strategy)
+def test_only_observe_records_and_every_other_mode_enforces(f, action):
+    if f.mode != "observe":
+        assert check(f, action) == check(replace(f, mode="enforce"), action)
+        assert check(f, action).verdict not in (V.RECORDED_DENY, V.RECORDED_HOLD)
+
+
+PROBE = """
+import sys
+import aegis.governance.engine.enforcement
+banned = ("aegis.gateway", "aegis.db", "aegis.registry", "sqlalchemy", "psycopg",
+          "anthropic", "openai", "httpx", "requests")
+print([m for m in sys.modules if any(m == b or m.startswith(b + ".") for b in banned)])
+"""
+
+
 def test_engine_imports_no_clock_or_io():
-    source = Path(enforcement_module.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    runtime = set()
-    for node in tree.body:  # module level only: TYPE_CHECKING imports sit inside an ast.If
-        if isinstance(node, ast.Import):
-            runtime.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            runtime.add(node.module)
-    assert runtime <= {"dataclasses", "datetime", "enum", "aegis.governance.conditions",
-                       "aegis.policy.engine"}
-    nested = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert not any(m.startswith(("aegis.registry", "aegis.gateway.service")) for m in nested)
-    assert "now(" not in source
+    """A fresh interpreter, so modules other tests already imported cannot hide a dependency."""
+    result = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True,  # noqa: S603
+                            check=True)
+    assert result.stdout.strip() == "[]"

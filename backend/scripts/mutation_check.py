@@ -501,11 +501,69 @@ MUTATIONS = [
              "if conditions is not None and _condition_denies(conditions, action):",
              "if False:", ENFORCEMENT_TESTS),
     Mutation("Combine lets a governance deny loosen a policy deny", ENFORCEMENT,
-             "if evaluation.outcome is Outcome.DENY or result.reason_code is None:",
-             "if result.reason_code is None:", ENFORCEMENT_TESTS),
+             "if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             "if result.verdict not in (", ENFORCEMENT_TESTS),
     Mutation("Combine ignores a governance hold", ENFORCEMENT,
-             "if result.verdict is Verdict.HOLD and evaluation.outcome is Outcome.ALLOW:",
-             "if False:", ENFORCEMENT_TESTS),
+             "if evaluation.outcome is Outcome.ALLOW:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Unknown mode fails open to observe", ENFORCEMENT,
+             'if facts.mode == "observe":', 'if facts.mode != "enforce":', ENFORCEMENT_TESTS),
+    Mutation("Not-approved row removed", ENFORCEMENT,
+             "elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:",
+             "elif False:", ENFORCEMENT_TESTS),
+    Mutation("Reassessment and condition hold rows swapped", ENFORCEMENT,
+             """    if recorded is None and facts.status in _REASSESSING:
+        recorded = _recorded_or_applied(facts, Verdict.HOLD, "GOVERNANCE_REASSESSMENT_REQUIRED")
+        if recorded.verdict is Verdict.HOLD:
+            return recorded
+    if conditions is not None and _condition_holds(conditions, action):
+        return GovernanceCheck(Verdict.HOLD, "GOVERNANCE_CONDITION_HOLD")
+""",
+             """    if conditions is not None and _condition_holds(conditions, action):
+        return GovernanceCheck(Verdict.HOLD, "GOVERNANCE_CONDITION_HOLD")
+    if recorded is None and facts.status in _REASSESSING:
+        recorded = _recorded_or_applied(facts, Verdict.HOLD, "GOVERNANCE_REASSESSMENT_REQUIRED")
+        if recorded.verdict is Verdict.HOLD:
+            return recorded
+""", ENFORCEMENT_TESTS),
+    Mutation("Integrity check moved below expiry", ENFORCEMENT,
+             """    if not facts.conditions_intact:
+        return _deny("GOVERNANCE_INTEGRITY_FAILED")
+
+    recorded: GovernanceCheck | None = None
+    if facts.valid_until is not None and facts.now >= facts.valid_until:
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+    elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:
+        # No state row, no approval in force, or a status that cannot hold one: fail closed.
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_NOT_APPROVED")
+    if recorded is not None and recorded.verdict is Verdict.DENY:
+        return recorded
+""",
+             """    recorded: GovernanceCheck | None = None
+    if facts.valid_until is not None and facts.now >= facts.valid_until:
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+    elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:
+        # No state row, no approval in force, or a status that cannot hold one: fail closed.
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_NOT_APPROVED")
+    if recorded is not None and recorded.verdict is Verdict.DENY:
+        return recorded
+    if not facts.conditions_intact:
+        return _deny("GOVERNANCE_INTEGRITY_FAILED")
+""", ENFORCEMENT_TESTS),
+    Mutation("Classification limit not enforced", ENFORCEMENT,
+             "return rank is None or rank > _CLASSIFICATION_RANK[limit]", "return False",
+             ENFORCEMENT_TESTS),
+    Mutation("Combine drops the deny branch", ENFORCEMENT,
+             "if result.verdict is Verdict.DENY:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Recorded row shadows a condition deny in observe", ENFORCEMENT,
+             "if conditions is not None and _condition_denies(conditions, action):",
+             "if recorded is None and conditions is not None "
+             "and _condition_denies(conditions, action):",
+             ENFORCEMENT_TESTS),
+    Mutation("Recorded row shadows a condition hold in observe", ENFORCEMENT,
+             "if conditions is not None and _condition_holds(conditions, action):",
+             "if recorded is None and conditions is not None "
+             "and _condition_holds(conditions, action):",
+             ENFORCEMENT_TESTS),
 ]
 
 
