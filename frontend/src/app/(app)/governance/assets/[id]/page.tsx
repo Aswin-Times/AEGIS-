@@ -99,8 +99,8 @@ async function load(id: string) {
   const [asset, history, evidence, reviews, policies, incidents, frameworks, people, risk] =
     await Promise.all([
       api<AssetDetail>(`/governance/assets/${assetPath}`),
-      api<Page<HistoryEntry>>(`/governance/assets/${assetPath}/history?limit=100`),
-      api<Page<Evidence>>(`/governance/evidence?asset_id=${assetPath}&limit=100`),
+      allPages<Page<HistoryEntry>>(`/governance/assets/${assetPath}/history`),
+      allPages<Page<Evidence>>(`/governance/evidence?asset_id=${assetPath}`),
       api<Page<Review>>(`/governance/approvals?asset_id=${assetPath}&limit=1`),
       allPages<Page<GovernancePolicy>>("/governance/policies"),
       api<Page<RelatedIncident>>(`/incidents?asset_id=${assetPath}&limit=25`),

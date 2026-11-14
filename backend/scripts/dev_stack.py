@@ -6,7 +6,8 @@ Set AEGIS_ADMIN_DATABASE_URL to use an existing server instead, as Docker Compos
 
 State lives in backend/.dev, which git ignores. Delete that directory to start clean. The
 first run seeds a synthetic demo tenant through the real API, and writes its generated login
-to backend/.dev/demo-credentials.json.
+to backend/.dev/demo-credentials.json. Every start runs the seed again, which only adds what is
+missing, so an older .dev gains new demo data without duplicates.
 """
 
 import json
@@ -109,8 +110,7 @@ def main() -> int:
         base_url = f"http://127.0.0.1:{PORT}"
         _wait_until_healthy(base_url)
         credentials = DEV / "demo-credentials.json"
-        if not credentials.exists():
-            seed(base_url, owner_url, credentials)
+        seed(base_url, owner_url, credentials)
         print(f"AEGIS API ready at {base_url}. Demo login: {credentials}", flush=True)
         return api.wait()
     finally:

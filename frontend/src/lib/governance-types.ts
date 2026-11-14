@@ -363,6 +363,8 @@ export type Evidence = {
   source_uri: string | null;
   record_type: string | null;
   record_id: string | null;
+  // Inline text, for admins and reviewers only.
+  content_text?: string | null;
   control_ids: string[];
   current_verification: string;
   latest_verification: EvidenceVerification | null;
@@ -374,18 +376,66 @@ export type Framework = {
   version: string;
   name: string;
   source_url: string | null;
+  source_document: string;
   library_status: "NOT_LOADED" | "LOADED_PARTIAL" | "LOADED";
   control_count: number;
   source_control_count: number | null;
   coverage: string;
+  status_counts: Record<string, number>;
+};
+
+export type ControlAssessment = {
+  id: string;
+  status: string;
+  note: string;
+  assessed_by: string;
+  assessed_at: string;
+  evidence_ids: string[];
 };
 
 export type Control = {
   id: string;
+  framework_id: string;
   framework_key: string;
   identifier: string;
   name: string;
+  description: string;
+  source_reference: string;
+  required_evidence: string[];
+  // The API's derived status: EVIDENCE_REQUIRED when a claim has no verified evidence behind it.
   current_status: string;
+  latest_assessment: ControlAssessment | null;
+  verified_evidence_count: number;
+  linked_evidence_count: number;
+};
+
+export type DueReview = {
+  asset_id: string;
+  name: string;
+  governance_status: string;
+  next_review_at: string;
+  valid_until: string | null;
+  overdue: boolean;
+  expired: boolean;
+};
+
+export type PreflightItem = {
+  asset_id: string;
+  name: string;
+  governance_status: string | null;
+  verdict: "DENY" | "HOLD";
+  reason_code: string;
+  recent_actions: number;
+  recent_not_passed: number;
+};
+
+export type Preflight = {
+  enforcement_mode: string;
+  since: string;
+  assets_checked: number;
+  would_deny: number;
+  would_hold: number;
+  items: PreflightItem[];
 };
 
 // Every compliance response carries the statement that a mapping is not a certification.
@@ -424,3 +474,13 @@ export type DecisionFormState = {
   fieldErrors?: Record<string, string>;
   saved?: string;
 };
+
+// Control statuses as the API derives them, in the order a reader meets them.
+export const CONTROL_STATUSES = [
+  "NOT_ASSESSED",
+  "EVIDENCE_REQUIRED",
+  "IMPLEMENTED",
+  "PARTIALLY_IMPLEMENTED",
+  "NOT_IMPLEMENTED",
+  "NOT_APPLICABLE",
+] as const;

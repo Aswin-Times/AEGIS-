@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import type { Page } from "@/lib/types";
 
 /** Every page of a list, 100 at a time. A page that stops at the first 100 would hide the rest. */
-export async function allPages<P extends Page<{ id: string }>>(path: string): Promise<P> {
+export async function allPages<P extends Page<unknown>>(path: string): Promise<P> {
   const first = await api<P>(`${path}${path.includes("?") ? "&" : "?"}limit=100`);
   const items = [...first.items];
   while (items.length < first.total && items.length % 100 === 0) {

@@ -1,21 +1,13 @@
 import type { ReactNode } from "react";
 import { EmptyState, PageHeader, Panel } from "@/components/ui";
 import { PermissionDenied } from "@/components/permission-denied";
+import { Tile } from "@/components/tile";
 import { ApiError, api } from "@/lib/api";
+import { MODE_NOTE } from "@/lib/enforcement-text";
 import { humanize } from "@/lib/format";
 import type { GovernanceOverview } from "@/lib/governance-types";
 
 export const metadata = { title: "Governance Center | AEGIS" };
-
-function Tile({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <section aria-label={label} className="rounded-md border border-line bg-surface p-3">
-      <h3 className="text-xs text-muted">{label}</h3>
-      <strong className="block text-2xl font-semibold">{value}</strong>
-      {note && <p className="text-xs text-muted">{note}</p>}
-    </section>
-  );
-}
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -25,13 +17,6 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
     </div>
   );
 }
-
-const MODE_NOTE: Record<string, string> = {
-  observe:
-    "Where no approval is in force, checks are recorded and do not block actions. Decisions a person made, such as suspension, retirement and conditions, still apply.",
-  enforce:
-    "An asset with no approval in force, including a Not governed one, is denied. Decisions a person made still apply.",
-};
 
 export default async function GovernanceOverviewPage() {
   let overview: GovernanceOverview;

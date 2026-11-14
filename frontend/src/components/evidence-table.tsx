@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Cell, EmptyState, StatusBadge, Table } from "@/components/ui";
 import { formatTime, humanize } from "@/lib/format";
 import type { Evidence } from "@/lib/governance-types";
@@ -18,21 +19,41 @@ const SOURCE: Record<string, string> = {
   external_reference: "External reference",
 };
 
-export function EvidenceTable({ items }: { items: Evidence[] }) {
+export function EvidenceTable({
+  items,
+  assets,
+  emptyDetail = "Evidence submitted for this asset, and how it was checked, is listed here.",
+}: {
+  items: Evidence[];
+  // Asset names by id. When given, each row says which asset the evidence belongs to.
+  assets?: Map<string, string>;
+  emptyDetail?: string;
+}) {
   if (items.length === 0) {
-    return (
-      <EmptyState
-        title="No evidence recorded"
-        detail="Evidence submitted for this asset, and how it was checked, is listed here."
-      />
-    );
+    return <EmptyState title="No evidence recorded" detail={emptyDetail} />;
   }
   return (
-    <Table head={["Evidence", "Category", "Source", "Verification", "How it was checked"]}>
+    <Table
+      head={[
+        ...(assets ? ["Asset"] : []),
+        "Evidence",
+        "Category",
+        "Source",
+        "Verification",
+        "How it was checked",
+      ]}
+    >
       {items.map((item) => {
         const check = item.latest_verification;
         return (
           <tr key={item.id}>
+            {assets && (
+              <Cell>
+                <Link className="underline" href={`/governance/assets/${item.asset_id}`}>
+                  {assets.get(item.asset_id) ?? "Asset"}
+                </Link>
+              </Cell>
+            )}
             <Cell>{item.description}</Cell>
             <Cell>{humanize(item.category)}</Cell>
             <Cell>

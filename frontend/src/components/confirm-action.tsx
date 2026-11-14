@@ -1,9 +1,15 @@
 "use client";
 
-import { type ReactNode, useActionState, useId, useRef } from "react";
+import { type ReactNode, useActionState, useEffect, useId, useRef } from "react";
 import { useFormStatus } from "react-dom";
 
-export type ActionState = { error?: string };
+export type ActionState = {
+  error?: string;
+  // The API's own error code, such as ENFORCEMENT_MODE_UNCHANGED.
+  code?: string;
+  // Keyed by the form's field names, so a field can be marked invalid and described.
+  fieldErrors?: Record<string, string>;
+};
 
 function Submit({ label, danger }: { label: string; danger?: boolean }) {
   const { pending } = useFormStatus();
@@ -40,7 +46,8 @@ export function ConfirmAction({
   danger?: boolean;
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
   fields: Record<string, string>;
-  extra?: ReactNode;
+  // A function receives the last result, so fields can show their own errors.
+  extra?: ReactNode | ((state: ActionState) => ReactNode);
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -49,6 +56,14 @@ export function ConfirmAction({
     if (!result.error) dialog.current?.close();
     return result;
   }, {});
+
+  // After a refusal, focus goes to the first field marked invalid, else to the message.
+  useEffect(() => {
+    if (!state.error) return;
+    const root = dialog.current;
+    const target = root?.querySelector<HTMLElement>('[aria-invalid="true"]') ?? root?.querySelector<HTMLElement>("[role=alert]");
+    target?.focus();
+  }, [state]);
 
   return (
     <>
@@ -73,10 +88,11 @@ export function ConfirmAction({
           {Object.entries(fields).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
-          {extra}
+          {typeof extra === "function" ? extra(state) : extra}
           {state.error && (
-            <p role="alert" className="mb-2 text-sm text-deny">
+            <p role="alert" tabIndex={-1} className="mb-2 text-sm text-deny">
               {state.error}
+              {state.code && <span className="block text-xs text-muted">Code: {state.code}</span>}
             </p>
           )}
           <div className="flex justify-end gap-2">

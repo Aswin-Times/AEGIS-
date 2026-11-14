@@ -248,12 +248,22 @@ export function FilterLinks({
   name,
   current,
   options,
+  params = {},
 }: {
   basePath: string;
   name: string;
   current: string | undefined;
   options: { value: string | undefined; label: string }[];
+  // Other query values to keep when the filter changes.
+  params?: Record<string, string | undefined>;
 }) {
+  const href = (value: string | undefined) => {
+    const search = new URLSearchParams();
+    for (const [key, kept] of Object.entries(params)) if (kept) search.set(key, kept);
+    if (value) search.set(name, value);
+    const text = search.toString();
+    return text ? `${basePath}?${text}` : basePath;
+  };
   return (
     <nav aria-label="Filter" className="mb-3 flex flex-wrap gap-1">
       {options.map((option) => {
@@ -261,7 +271,7 @@ export function FilterLinks({
         return (
           <Link
             key={option.label}
-            href={option.value ? `${basePath}?${name}=${option.value}` : basePath}
+            href={href(option.value)}
             aria-current={active ? "true" : undefined}
             className={`rounded border px-2 py-1 text-xs ${
               active

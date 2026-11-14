@@ -8,6 +8,9 @@ const ITEMS = [
   { href: "/governance/assets", label: "Inventory", exact: false },
   { href: "/governance/approvals", label: "Approval Center", exact: false },
   { href: "/governance/policies", label: "Policy library", exact: false },
+  { href: "/governance/compliance", label: "Compliance", exact: false },
+  { href: "/governance/reviews", label: "Review center", exact: false },
+  { href: "/governance/enforcement", label: "Enforcement", exact: false },
 ];
 
 export function GovernanceNav() {
