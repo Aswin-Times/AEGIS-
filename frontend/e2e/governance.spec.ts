@@ -76,16 +76,30 @@ test("overview shows counts from the API and the enforcement mode", async ({ pag
   await expect(tile(page, "Reviews owed past date")).toContainText("past their review date");
   const mode = page.getByRole("region", { name: "Enforcement mode", exact: true });
   await expect(mode).toContainText(overview.enforcement_mode === "enforce" ? "Enforce" : "Observe");
+  // Decisions a person made apply in both modes, so neither note may say checks never block.
+  await expect(mode).toContainText("Decisions a person made");
+  await expect(mode).not.toContainText("They do not block actions");
 });
 
 test("overview empty state on a tenant with no assets", async ({ page }) => {
   const slug = `synthetic-empty-${randomUUID().slice(0, 8)}`;
   const password = randomUUID();
-  execFileSync(
-    path.join(__dirname, "../../backend/.venv/Scripts/python.exe"),
-    [path.join(__dirname, "provision_tenant.py"), slug, "admin@synthetic.example.test", password],
-    { stdio: "pipe" },
-  );
+  const python =
+    process.platform === "win32"
+      ? path.join(__dirname, "../../backend/.venv/Scripts/python.exe")
+      : path.join(__dirname, "../../backend/.venv/bin/python");
+  // The helper prints only an exception type, and the arguments (which hold the new password) are
+  // kept out of any error thrown here.
+  try {
+    execFileSync(
+      python,
+      [path.join(__dirname, "provision_tenant.py"), slug, "admin@synthetic.example.test", password],
+      { stdio: "pipe" },
+    );
+  } catch (error) {
+    const stderr = String((error as { stderr?: Buffer }).stderr ?? "").trim();
+    throw new Error(`Could not provision the empty tenant. ${stderr}`);
+  }
 
   await page.goto("/login");
   await page.getByLabel("Organization").fill(slug);

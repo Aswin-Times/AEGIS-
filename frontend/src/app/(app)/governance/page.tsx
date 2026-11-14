@@ -27,8 +27,10 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 }
 
 const MODE_NOTE: Record<string, string> = {
-  observe: "Governance checks are recorded. They do not block actions.",
-  enforce: "Governance checks can deny or hold actions on assets that fail them.",
+  observe:
+    "Where no approval is in force, checks are recorded and do not block actions. Decisions a person made, such as suspension, retirement and conditions, still apply.",
+  enforce:
+    "An asset with no approval in force, including a Not governed one, is denied. Decisions a person made still apply.",
 };
 
 export default async function GovernanceOverviewPage() {

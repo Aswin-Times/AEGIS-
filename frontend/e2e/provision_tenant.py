@@ -24,4 +24,9 @@ def main(slug: str, email: str, password: str) -> None:
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    # Failures can carry the owner URL, which holds the database password, so report only the type.
+    try:
+        main(*sys.argv[1:4])
+    except Exception as error:
+        print(f"provision_tenant failed: {type(error).__name__}", file=sys.stderr)
+        sys.exit(1)

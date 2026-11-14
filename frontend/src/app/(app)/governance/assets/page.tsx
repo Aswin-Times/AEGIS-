@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Cell,
   EmptyState,
@@ -128,9 +129,9 @@ export default async function InventoryPage({
           Apply filters
         </button>
         {filtered && (
-          <a href="/governance/assets" className="py-1 underline">
+          <Link href="/governance/assets" className="py-1 underline">
             Clear filters
-          </a>
+          </Link>
         )}
       </form>
       <Panel>
