@@ -46,6 +46,9 @@ GATEWAY_CHECK = "src/aegis/governance/gateway_check.py"
 GATEWAY_TESTS = f"{SEC}/test_governance_gateway.py"
 RISK_ENGINE = "src/aegis/governance/engine/risk.py"
 EVIDENCE_MIGRATION = "migrations/versions/0011_governance_evidence.py"
+REVIEWS = "src/aegis/governance/reviews.py"
+REVIEWS_MIGRATION = "migrations/versions/0014_governance_reviews.py"
+REVIEW_TESTS = f"{SEC}/test_governance_reviews.py"
 LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
@@ -622,6 +625,24 @@ MUTATIONS = [
              'status="INCOMPLETE",\n            score=None,\n            risk_level=None,',
              'status="INCOMPLETE",\n            score=None,\n            risk_level="LOW",',
              "tests/unit/test_governance_risk.py"),
+    Mutation("Governance: review worker moves an asset that is not yet due", REVIEWS,
+             "    if state.status not in APPROVED_STATUSES:\n        return False\n",
+             "    if state.status in APPROVED_STATUSES:\n        return True\n", REVIEW_TESTS),
+    Mutation("Governance: review worker skips the re-check under the lock", REVIEWS,
+             "    if state is None or not is_due(state, now):\n        return None\n",
+             "    if state is None:\n        return None\n", REVIEW_TESTS),
+    Mutation("Governance: review worker clears the hard block", APPROVALS,
+             "transition(session, state, GovernanceStatus.REASSESSMENT_REQUIRED, now)",
+             "transition(session, state, GovernanceStatus.REASSESSMENT_REQUIRED, now, "
+             "hard_block_decision_id=None)", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup returns asset ids", REVIEWS_MIGRATION,
+             "SELECT DISTINCT tenant_id FROM public.asset_governance_state",
+             "SELECT DISTINCT asset_id FROM public.asset_governance_state", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup ignores the date", REVIEWS_MIGRATION,
+             "AND (next_review_at <= p_now OR valid_until <= p_now)", "", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup executable by PUBLIC", REVIEWS_MIGRATION,
+             '"REVOKE ALL ON FUNCTION aegis_tenants_with_due_governance_reviews(timestamptz) '
+             'FROM PUBLIC",', '"SELECT 1",', REVIEW_TESTS),
 ]
 
 

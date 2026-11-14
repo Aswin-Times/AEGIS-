@@ -100,6 +100,17 @@ class OverviewOut(Out):
     enforcement_mode: str
 
 
+class DueReviewOut(Out):
+    asset_id: UUID
+    name: str
+    governance_status: str
+    next_review_at: datetime
+    valid_until: datetime | None
+    # The review date has passed. A due review stays listed until a new approval sets the next.
+    overdue: bool
+    expired: bool
+
+
 class AssessmentSummaryOut(Out):
     id: UUID
     asset_id: UUID

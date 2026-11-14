@@ -29,6 +29,7 @@ from aegis.api.schemas_governance import (
     ControlAssessmentSummaryOut,
     ControlOut,
     DecisionOut,
+    DueReviewOut,
     EnforcementIn,
     EnforcementOut,
     EvidenceDetailOut,
@@ -113,6 +114,7 @@ from aegis.governance.policies import (
     list_policies,
 )
 from aegis.governance.profile import AssetProfile
+from aegis.governance.reviews import list_due
 from aegis.governance.risk import (
     AssessmentRecord,
     activate_methodology_version,
@@ -745,6 +747,22 @@ def controls_assess(id: UUID, body: ControlAssessIn, user: GovernanceReviewerDep
             **_assessment_fields(assessment, record.latest_evidence_ids),
             control_id=id, current_status=record.current_status,
             statement=NO_CERTIFICATION_STATEMENT,
+        )
+
+
+# Scheduled reviews
+
+
+@router.get("/reviews/due", response_model=Page[DueReviewOut])
+def reviews_due(user: UserDep, container: ContainerDep,
+                window_days: Annotated[int, Query(ge=0, le=365)] = 30,
+                limit: LimitQuery = 50, offset: OffsetQuery = 0):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        rows, total = list_due(session, container.clock(), window_days=window_days, limit=limit,
+                               offset=offset)
+        return Page[DueReviewOut](
+            items=[DueReviewOut.model_validate(row) for row in rows],
+            total=total, limit=limit, offset=offset,
         )
 
 

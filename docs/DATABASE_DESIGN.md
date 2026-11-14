@@ -167,7 +167,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT, INSERT`, `UPDATE (status, decided_by, decided_at, comment)` | `approvals` |
 | `SELECT, INSERT`, `UPDATE (status, result, finished_at)` | `executions` |
 | `SELECT, INSERT, DELETE` | `agent_tool_grants`, `agent_resource_grants` |
-| `EXECUTE` | `aegis_resolve_tenant(text)` |
+| `EXECUTE` | `aegis_resolve_tenant(text)`, `aegis_tenants_with_due_governance_reviews(timestamptz)` |
 
 Updates are column-level, so the runtime role cannot change a request, an approval's binding,
 or an agent's owner. A test compares this table with the live catalog. Tenants and users can
@@ -176,9 +176,21 @@ only be created by the owner role, through `aegis.provisioning`.
 A request's current state is read from its decision, approval, and execution rows, so
 `action_requests` can stay insert-only.
 
+## `aegis_tenants_with_due_governance_reviews(p_now)`
+
+The third `SECURITY DEFINER` function (migration `0014`, spec 13). The review worker must find
+tenants with a due review without a tenant context, so this returns tenant IDs only: tenants with
+an asset in `APPROVED` or `CONDITIONALLY_APPROVED` whose `next_review_at` or `valid_until` is at or
+before `p_now`. It is owned by the migration role, has `search_path = pg_catalog, pg_temp`, and
+only `aegis_app` may execute it (`PUBLIC` is revoked). The matching owner policy
+`owner_finds_due_reviews` on `asset_governance_state` exposes only rows with a `next_review_at`,
+which a row has only while an approval stands. The worker then works inside each tenant's own
+context, one asset per transaction, and repeats the due test under the asset's locks. A test fails
+if any other such function appears.
+
 ## `aegis_tenants_with_pending_events()`
 
-The second and only other `SECURITY DEFINER` function. The correlation worker must find work without a
+The second `SECURITY DEFINER` function. The correlation worker must find work without a
 tenant context, so this returns tenant IDs only. The matching owner policy exposes only unprocessed
 rows. A test fails if any other such function appears.
 

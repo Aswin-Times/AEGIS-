@@ -378,5 +378,6 @@ def test_only_the_id_lookups_are_security_definer(attacker_sql):
     ).fetchall()
     assert sorted(row[0] for row in rows) == [
         "aegis_resolve_tenant",
+        "aegis_tenants_with_due_governance_reviews",
         "aegis_tenants_with_pending_events",
     ]

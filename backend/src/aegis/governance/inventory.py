@@ -25,6 +25,7 @@ from aegis.governance.approvals import outstanding_findings
 from aegis.governance.enforcement_mode import get_mode
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.evidence import evidence_counts
+from aegis.governance.reviews import overdue_count
 from aegis.governance.risk import AssessmentRecord
 
 RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -243,13 +244,6 @@ def overview(session: Session, now: datetime) -> OverviewView:
             select(AssetGovernanceState.status, func.count()).group_by(AssetGovernanceState.status)
         ).all()
     )
-    approved = (GovernanceStatus.APPROVED.value, GovernanceStatus.CONDITIONALLY_APPROVED.value)
-    overdue = session.execute(
-        select(func.count()).where(
-            AssetGovernanceState.status.in_(approved),
-            AssetGovernanceState.next_review_at <= now,
-        )
-    ).scalar_one()
     counts = dict(
         session.execute(
             select(_latest.c.risk_level, func.count())
@@ -266,7 +260,7 @@ def overview(session: Session, now: datetime) -> OverviewView:
         awaiting_approval=by_status.get(GovernanceStatus.UNDER_REVIEW.value, 0),
         conditionally_approved=by_status.get(GovernanceStatus.CONDITIONALLY_APPROVED.value, 0),
         suspended=by_status.get(GovernanceStatus.SUSPENDED.value, 0),
-        overdue_reviews=overdue,
+        overdue_reviews=overdue_count(session, now),
         outstanding_findings=outstanding_findings(session),
         evidence_verified=evidence_verified,
         evidence_total=evidence_total,
