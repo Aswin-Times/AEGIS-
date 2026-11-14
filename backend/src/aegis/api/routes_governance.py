@@ -29,6 +29,8 @@ from aegis.api.schemas_governance import (
     ControlAssessmentSummaryOut,
     ControlOut,
     DecisionOut,
+    EnforcementIn,
+    EnforcementOut,
     EvidenceDetailOut,
     EvidenceIn,
     EvidenceOut,
@@ -47,6 +49,7 @@ from aegis.api.schemas_governance import (
     PolicyOut,
     PolicyVersionIn,
     PolicyVersionOut,
+    PreflightOut,
     ProfileVersionOut,
     ProfileVersionSummaryOut,
     RejectIn,
@@ -87,6 +90,7 @@ from aegis.governance.compliance import (
     list_controls,
     list_frameworks,
 )
+from aegis.governance.enforcement_mode import get_mode, preflight, set_mode
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.evidence import (
     EvidenceRecord,
@@ -742,3 +746,25 @@ def controls_assess(id: UUID, body: ControlAssessIn, user: GovernanceReviewerDep
             control_id=id, current_status=record.current_status,
             statement=NO_CERTIFICATION_STATEMENT,
         )
+
+
+# Enforcement mode
+
+
+@router.get("/enforcement", response_model=EnforcementOut)
+def enforcement_get(user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return EnforcementOut(enforcement_mode=get_mode(session))
+
+
+@router.post("/enforcement", response_model=EnforcementOut)
+def enforcement_set(body: EnforcementIn, user: AdminDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        settings = set_mode(session, user, container.clock(), mode=body.mode, reason=body.reason)
+        return EnforcementOut(enforcement_mode=settings.enforcement_mode)
+
+
+@router.get("/enforcement/preflight", response_model=PreflightOut)
+def enforcement_preflight(user: UserDep, container: ContainerDep):
+    with container.db.tenant_transaction(user.tenant_id) as session:
+        return PreflightOut.model_validate(preflight(session, container.clock()))

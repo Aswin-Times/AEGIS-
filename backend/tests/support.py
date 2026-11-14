@@ -42,6 +42,7 @@ class AgentHandle:
     key: str
     tenant: "TenantWorld"
     credential_id: str
+    asset_id: str | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -193,7 +194,27 @@ class TenantWorld:
         for resource in resources:
             self.created(f"/agents/{agent['id']}/resource-grants", {"resource_id": resource})
         credential = self.created(f"/agents/{agent['id']}/credentials", {})
-        return AgentHandle(agent["id"], credential["key"], self, credential["id"])
+        return AgentHandle(agent["id"], credential["key"], self, credential["id"], asset["id"])
+
+    def governed_agent(self, tools=(), resources=(), approve=True, conditions=None,
+                       valid_days=30) -> AgentHandle:
+        """An agent whose asset went through the real flow: profile, assessment, submission by
+        the admin, and approval by a second admin holding governance_reviewer."""
+        agent = self.agent(tools, resources)
+        save_profile(self, agent.asset_id)
+        assess(self, agent.asset_id)
+        if approve:
+            holder = reviewers(self)
+            review = submitted(self, agent.asset_id)
+            response = approve_review(self, review["id"], holder, conditions=conditions,
+                                      **window(valid_days, valid_days))
+            assert response.status_code == 201, response.text
+        return agent
+
+    def set_enforcement(self, mode: str, reason: str = "Synthetic mode change."):
+        response = self.post("/governance/enforcement", {"mode": mode, "reason": reason})
+        assert response.status_code == 200, response.text
+        return response.json()
 
     def activate(self, rules: list[dict[str, Any]]) -> dict[str, Any]:
         policy = self.created("/policies", {"name": self._unique("policy")})
@@ -391,6 +412,10 @@ def approve(tenant, review_id, headers, reason="Controls are adequate.", conditi
     if conditions is not None:
         body["conditions"] = conditions
     return tenant.post(f"{APPROVALS}/{review_id}/approve", body, headers=headers)
+
+
+# TenantWorld.governed_agent has a parameter named approve.
+approve_review = approve
 
 
 def reject(tenant, review_id, headers, reason="The risks are not mitigated."):

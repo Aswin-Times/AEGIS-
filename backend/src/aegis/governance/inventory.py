@@ -16,19 +16,18 @@ from aegis.db.models import (
     AssetProfileVersion,
     AuditEvent,
     GovernanceDecision,
-    GovernanceSettings,
     RiskAssessment,
     RiskMethodologyVersion,
     User,
 )
 from aegis.errors import NotFound
 from aegis.governance.approvals import outstanding_findings
+from aegis.governance.enforcement_mode import get_mode
 from aegis.governance.engine.lifecycle import GovernanceStatus
 from aegis.governance.evidence import evidence_counts
 from aegis.governance.risk import AssessmentRecord
 
 RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
-DEFAULT_ENFORCEMENT_MODE = "observe"
 
 _business = aliased(User)
 _technical = aliased(User)
@@ -251,7 +250,6 @@ def overview(session: Session, now: datetime) -> OverviewView:
             AssetGovernanceState.next_review_at <= now,
         )
     ).scalar_one()
-    mode = session.execute(select(GovernanceSettings.enforcement_mode)).scalar_one_or_none()
     counts = dict(
         session.execute(
             select(_latest.c.risk_level, func.count())
@@ -272,7 +270,7 @@ def overview(session: Session, now: datetime) -> OverviewView:
         outstanding_findings=outstanding_findings(session),
         evidence_verified=evidence_verified,
         evidence_total=evidence_total,
-        enforcement_mode=mode or DEFAULT_ENFORCEMENT_MODE,
+        enforcement_mode=get_mode(session),
     )
 
 

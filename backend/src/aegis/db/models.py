@@ -589,6 +589,22 @@ class GovernanceControlAssessmentEvidence(Base):
     evidence_id: Mapped[UUID]
 
 
+class GovernanceGatewayCheck(Base):
+    __tablename__ = "governance_gateway_checks"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID]
+    decision_id: Mapped[UUID]
+    request_id: Mapped[UUID]
+    agent_id: Mapped[UUID]
+    asset_id: Mapped[UUID | None]
+    mode: Mapped[str]
+    observed_status: Mapped[str | None]
+    verdict: Mapped[str]
+    reason_code: Mapped[str | None]
+    governance_decision_id: Mapped[UUID | None]
+    checked_at: Mapped[datetime]
+
+
 class AuditChainHead(Base):
     __tablename__ = "audit_chain_heads"
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

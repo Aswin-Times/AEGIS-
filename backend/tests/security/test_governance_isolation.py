@@ -370,3 +370,26 @@ def test_cross_tenant_compliance_access_is_not_found(world):
                       ).status_code == 201
     counts = second.get("/governance/frameworks").json()["items"]
     assert all(item["status_counts"]["NOT_APPLICABLE"] == 0 for item in counts)
+
+
+def test_enforcement_mode_preflight_and_checks_belong_to_one_tenant(world, db):
+    first, second = world.tenant(), world.tenant()
+    first.allow_everything()
+    second.allow_everything()
+    mine = first.agent(tools=["calculate"])
+    theirs = second.agent(tools=["calculate"])
+    first.set_enforcement("enforce")
+
+    assert first.get("/governance/enforcement").json()["enforcement_mode"] == "enforce"
+    assert second.get("/governance/enforcement").json()["enforcement_mode"] == "observe"
+    params = {"operator": "add", "a": 1, "b": 2}
+    assert mine.act("calculate", params=params).json()["outcome"] == "DENY"
+    assert theirs.act("calculate", params=params).json()["outcome"] == "ALLOW"
+    assert second.audit_events("governance.enforcement_mode_changed") == []
+
+    listed = [item["asset_id"] for item in
+              second.get("/governance/enforcement/preflight").json()["items"]]
+    assert listed == [theirs.asset_id]
+    with db.tenant_transaction(second.id) as session:
+        rows = session.execute(text("SELECT asset_id FROM governance_gateway_checks")).all()
+    assert [str(row[0]) for row in rows] == [theirs.asset_id]

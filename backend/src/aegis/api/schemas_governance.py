@@ -435,3 +435,32 @@ class ControlAssessmentOut(ControlAssessmentSummaryOut):
     control_id: UUID
     current_status: str
     statement: str
+
+
+class EnforcementIn(In):
+    mode: Literal["observe", "enforce"]
+    reason: Reason
+
+
+class EnforcementOut(Out):
+    enforcement_mode: str
+
+
+class PreflightItemOut(Out):
+    asset_id: UUID
+    name: str
+    governance_status: str | None
+    # What enforce mode would do to any action of this asset's agents.
+    verdict: Literal["DENY", "HOLD"]
+    reason_code: str
+    recent_actions: int
+    recent_not_passed: int
+
+
+class PreflightOut(Out):
+    enforcement_mode: str
+    since: datetime
+    assets_checked: int
+    would_deny: int
+    would_hold: int
+    items: list[PreflightItemOut]

@@ -36,6 +36,13 @@ from aegis.db.session import Database
 from aegis.errors import AegisError, Conflict, NotFound, ServiceUnavailable
 from aegis.gateway.executor import ExecutionClaim, ToolExecutor
 from aegis.gateway.tools import ToolFailure, ToolRegistry
+from aegis.governance.engine.enforcement import combine
+from aegis.governance.gateway_check import (
+    GatewayOutcome,
+    action_context,
+    record_check,
+    safe_check,
+)
 from aegis.policy.engine import (
     ActionFacts,
     AttachmentFacts,
@@ -181,15 +188,27 @@ def _references_invisible_id(facts: ActionFacts) -> bool:
     return missing_resource or missing_attachment
 
 
+def _governed(
+    session: Session, agent_id: UUID, facts: ActionFacts, policy: Evaluation, now: datetime
+) -> tuple[Evaluation, GatewayOutcome]:
+    """Apply the governance check to the policy result. It can only tighten it (spec 11.1)."""
+    governance = safe_check(session, agent_id, action_context(facts), now)
+    return combine(policy, governance.check), governance
+
+
 def _record_decision(
     session: Session,
     request: ActionRequest,
     facts: ActionFacts,
     loaded: LoadedPolicy,
+    policy: Evaluation,
     evaluation: Evaluation,
+    governance: GatewayOutcome,
     now: datetime,
 ) -> PolicyDecision:
+    """`evaluation` is the final result; `policy` is the runtime policy's own, before governance."""
     version = loaded.version
+    governance_record = governance.record(policy)
     decision = PolicyDecision(
         id=uuid4(),
         tenant_id=request.tenant_id,
@@ -205,7 +224,11 @@ def _record_decision(
         reason_code=evaluation.reason_code,
         matched_rule_id=evaluation.matched_rule_id,
         evaluated_at=now,
-        evidence={"facts": asdict(facts), "action_hash": request.action_hash},
+        evidence={
+            "facts": asdict(facts),
+            "action_hash": request.action_hash,
+            "governance": governance_record,
+        },
     )
     session.add(decision)
     session.flush()
@@ -229,8 +252,10 @@ def _record_decision(
             "matched_rule_id": decision.matched_rule_id,
             "action_hash": request.action_hash,
             **({"not_visible_reference": True} if _references_invisible_id(facts) else {}),
+            "governance": governance_record,
         },
     )
+    record_check(session, decision, governance, now)
     return decision
 
 
@@ -411,7 +436,9 @@ def _decide_and_execute(
             session, registry, agent.tenant_id, agent.id, tool, resource_id, params
         )
         loaded = _load_policy(session, agent.tenant_id)
-        evaluation = _safe_evaluate(facts, loaded.document)
+        policy = _safe_evaluate(facts, loaded.document)
+        # After _load_facts, so the agent row is share-locked before governance is read.
+        evaluation, governance = _governed(session, agent.id, facts, policy, now)
 
         request = ActionRequest(
             id=uuid4(),
@@ -426,7 +453,9 @@ def _decide_and_execute(
         )
         session.add(request)
         session.flush()
-        decision = _record_decision(session, request, facts, loaded, evaluation, now)
+        decision = _record_decision(
+            session, request, facts, loaded, policy, evaluation, governance, now
+        )
 
         approval = None
         if evaluation.outcome is Outcome.REQUIRE_APPROVAL:
@@ -576,8 +605,12 @@ def _execute_approved(db, registry, agent, request_id, clock) -> ActionResult:
                     request.resource_id, json.loads(request.params_canonical),
                 )
                 loaded = _load_policy(session, request.tenant_id)
-                evaluation = _safe_evaluate(facts, loaded.document)
-                _record_decision(session, request, facts, loaded, evaluation, now)
+                policy = _safe_evaluate(facts, loaded.document)
+                evaluation, governance = _governed(session, request.agent_id, facts, policy, now)
+                _record_decision(
+                    session, request, facts, loaded, policy, evaluation, governance, now
+                )
+                # A hold does not block what a person already approved; a deny cancels it.
                 if evaluation.outcome is Outcome.DENY:
                     refused = evaluation.reason_code
             if refused is not None:

@@ -42,6 +42,10 @@ COMPLIANCE_TESTS = f"{SEC}/test_governance_compliance.py"
 FRAMEWORKS_MIGRATION = "migrations/versions/0012_governance_frameworks.py"
 ENFORCEMENT = "src/aegis/governance/engine/enforcement.py"
 ENFORCEMENT_TESTS = "tests/unit/test_governance_enforcement.py"
+GATEWAY_CHECK = "src/aegis/governance/gateway_check.py"
+GATEWAY_TESTS = f"{SEC}/test_governance_gateway.py"
+RISK_ENGINE = "src/aegis/governance/engine/risk.py"
+EVIDENCE_MIGRATION = "migrations/versions/0011_governance_evidence.py"
 LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
@@ -564,6 +568,60 @@ MUTATIONS = [
              "if recorded is None and conditions is not None "
              "and _condition_holds(conditions, action):",
              ENFORCEMENT_TESTS),
+    Mutation("Governance: gateway check result ignored", GATEWAY,
+             "return combine(policy, governance.check), governance",
+             "return policy, governance", GATEWAY_TESTS),
+    Mutation("Governance: combine can loosen a policy result", ENFORCEMENT,
+             "    if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             "    if result.verdict is Verdict.PASS:\n"
+             "        return Evaluation(Outcome.ALLOW, evaluation.reason_code)\n"
+             "    if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             GATEWAY_TESTS),
+    Mutation("Governance: hard block ignored at the gateway", GATEWAY_CHECK,
+             "hard_blocked=is_hard_blocked(state.status, state.hard_block_decision_id),",
+             "hard_blocked=False,", GATEWAY_TESTS),
+    Mutation("Governance: blocking status ignored when its block is missing", GATEWAY_CHECK,
+             "return hard_block_decision_id is not None or status in _BLOCKING_STATUSES",
+             "return hard_block_decision_id is not None", GATEWAY_TESTS),
+    Mutation("Governance: approval expiry ignored at the gateway", GATEWAY_CHECK,
+             "valid_until=state.valid_until,",
+             "valid_until=state.valid_until and now.replace(year=now.year + 1),",
+             GATEWAY_TESTS),
+    Mutation("Governance: unreadable attachment treated as no resource", GATEWAY_CHECK,
+             "seen.append(facts.attachment.classification or UNKNOWN_CLASSIFICATION)",
+             "seen.extend([facts.attachment.classification] "
+             "if facts.attachment.classification else [])", GATEWAY_TESTS),
+    Mutation("Governance: missing current decision read as no conditions", GATEWAY_CHECK,
+             "    if decision is None:\n        return None, False",
+             "    if decision is None:\n        return None, True", GATEWAY_TESTS),
+    Mutation("Governance: check failure passes in enforce", GATEWAY_CHECK,
+             "verdict = Verdict.RECORDED_DENY if mode == DEFAULT_MODE else Verdict.DENY",
+             "verdict = Verdict.RECORDED_DENY", GATEWAY_TESTS),
+    Mutation("Governance: suspend without agent locks", ASSETS,
+             "    lock_asset_agents(session, asset_id)\n"
+             "    return load_state_for_update(session, asset_id)",
+             "    return load_state_for_update(session, asset_id)", GATEWAY_TESTS),
+    Mutation("Governance: agent rows locked against foreign key checks", ASSETS,
+             ".with_for_update(key_share=True)", ".with_for_update()", GATEWAY_TESTS),
+    Mutation("Governance: mode change open to any user", GOVERNANCE_ROUTES,
+             "def enforcement_set(body: EnforcementIn, user: AdminDep,",
+             "def enforcement_set(body: EnforcementIn, user: UserDep,", GATEWAY_TESTS),
+    Mutation("Governance: self-approval check removed", APPROVALS,
+             'if user.id == review.submitted_by and controls.get("self_approval_permitted") '
+             "is not True:", "if False:", f"{SEC}/test_governance_separation.py"),
+    Mutation("Governance: hard-block trigger clause removed", RETIRED_MIGRATION,
+             "IF OLD.hard_block_decision_id IS NOT NULL AND NEW.hard_block_decision_id IS NULL",
+             "IF FALSE", f"{SEC}/test_governance_assets.py"),
+    Mutation("Governance: evidence-verification self-check trigger removed", EVIDENCE_MIGRATION,
+             "        IF NEW.verified_by = (\n", "        IF FALSE AND NEW.verified_by = (\n",
+             EVIDENCE_TESTS),
+    Mutation("Governance: EVIDENCE_REQUIRED check removed", COMPLIANCE,
+             "if status in CLAIMS and not has_verified_evidence(session, control.id):",
+             "if False:", COMPLIANCE_TESTS),
+    Mutation("Governance: incomplete assessment given a level", RISK_ENGINE,
+             'status="INCOMPLETE",\n            score=None,\n            risk_level=None,',
+             'status="INCOMPLETE",\n            score=None,\n            risk_level="LOW",',
+             "tests/unit/test_governance_risk.py"),
 ]
 
 

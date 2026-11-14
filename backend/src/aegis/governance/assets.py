@@ -49,9 +49,15 @@ def lock_asset(session: Session, asset_id: UUID) -> None:
 
 
 def lock_asset_agents(session: Session, asset_id: UUID) -> None:
-    """Serializes against in-flight gateway evaluations, which share-lock their agent row."""
+    """Serializes against in-flight gateway evaluations, which share-lock their agent row.
+
+    FOR NO KEY UPDATE conflicts with that share lock as FOR UPDATE does, but not with the key
+    share lock a foreign key check takes. A finishing execution holds the chain head and then
+    inserts rows that reference its agent, so FOR UPDATE here would deadlock with it.
+    """
     session.execute(
-        select(Agent.id).where(Agent.asset_id == asset_id).order_by(Agent.id).with_for_update()
+        select(Agent.id).where(Agent.asset_id == asset_id).order_by(Agent.id)
+        .with_for_update(key_share=True)
     ).all()
 
 
