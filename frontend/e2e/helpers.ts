@@ -11,13 +11,13 @@ const demo = JSON.parse(
 
 export const email = (role: string) => `${role}@synthetic.example.test`;
 
-export async function adminHeaders() {
+export async function headersFor(role: string) {
   const response = await fetch(`${API}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       tenant_slug: demo.tenant,
-      email: email("admin"),
+      email: email(role),
       password: demo.password,
     }),
   });
@@ -25,6 +25,8 @@ export async function adminHeaders() {
   const { access_token: token } = (await response.json()) as { access_token: string };
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
+
+export const adminHeaders = () => headersFor("admin");
 
 export async function signIn(page: Page, role: string) {
   await page.goto("/login");

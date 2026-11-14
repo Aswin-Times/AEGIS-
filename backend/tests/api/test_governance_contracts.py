@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
+from aegis.correlation.engine import process_tenant
+
 ASSETS = "/governance/assets"
 OVERVIEW = "/governance/overview"
 
@@ -236,3 +238,21 @@ def test_detail_refuses_agents_and_allows_viewers(tenant):
     assert tenant.get(path, headers=tenant.login("viewer")).status_code == 200
     agent = tenant.agent()
     assert tenant.client.get(f"/api/v1{path}", headers=agent.headers).status_code == 401
+
+
+def test_incidents_filter_by_the_asset_of_their_agents(world, tenant):
+    tenant.allow_everything()
+    first, second = tenant.agent(), tenant.agent()
+    for agent in (first, second):
+        for _ in range(3):
+            agent.act("run_shell_command")
+    container = world.app.state.container
+    process_tenant(container.db, tenant.id, clock=container.clock)
+
+    items = tenant.get("/incidents", rule_key="repeated_unauthorized_tools").json()["items"]
+    assert {item["agent_id"] for item in items} == {first.id, second.id}
+
+    filtered = tenant.get("/incidents", asset_id=first.asset_id).json()
+    assert filtered["total"] == 1
+    assert [item["agent_id"] for item in filtered["items"]] == [first.id]
+    assert tenant.get("/incidents", asset_id=str(uuid4())).json()["total"] == 0

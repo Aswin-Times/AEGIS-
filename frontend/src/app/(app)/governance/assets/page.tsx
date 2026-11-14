@@ -160,7 +160,9 @@ export default async function InventoryPage({
               <tr key={asset.id}>
                 <Cell>
                   <div className="flex flex-wrap items-center gap-2">
-                    {asset.name}
+                    <Link href={`/governance/assets/${asset.id}`} className="underline">
+                      {asset.name}
+                    </Link>
                     {asset.is_synthetic && <SyntheticBadge />}
                   </div>
                 </Cell>
