@@ -117,12 +117,15 @@ export async function saveProfile(
 ): Promise<ProfileFormState> {
   const assetId = text(form, "asset_id");
   if (!UUID.test(assetId)) return { error: "That asset was not found." };
-  const { profile, fieldErrors, values } = await parseProfile(form);
-  if (Object.keys(fieldErrors).length > 0) {
-    return { error: "Some fields need attention.", fieldErrors, values };
-  }
   let saved: ProfileVersion;
+  let values: Record<string, string | string[]> = {};
   try {
+    const parsed = await parseProfile(form);
+    values = parsed.values;
+    if (Object.keys(parsed.fieldErrors).length > 0) {
+      return { error: "Some fields need attention.", fieldErrors: parsed.fieldErrors, values };
+    }
+    const profile = parsed.profile;
     saved = await api<ProfileVersion>(`/governance/assets/${assetId}/profile`, {
       method: "POST",
       body: profile satisfies AssetProfile,

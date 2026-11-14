@@ -24,10 +24,11 @@ import type {
   Person,
   RelatedIncident,
   Review,
+  RiskResponse,
 } from "@/lib/governance-types";
 import type { Me, Page } from "@/lib/types";
 import { AssessForm } from "./assess-form";
-import { AssetSummary } from "./asset-summary";
+import { AssetSummary, staleNote } from "./asset-summary";
 import { ProfileForm } from "./profile-form";
 
 export const metadata = { title: "AI asset | AEGIS" };
@@ -85,11 +86,12 @@ const SOURCE: Record<string, string> = {
   external_reference: "External reference",
 };
 
-async function allPages<T extends { id: string }>(path: string): Promise<CompliancePage<T>> {
-  const first = await api<CompliancePage<T>>(`${path}${path.includes("?") ? "&" : "?"}limit=100`);
+/** Every page of a list, 100 at a time. A page that stops at the first 100 would hide the rest. */
+async function allPages<P extends Page<{ id: string }>>(path: string): Promise<P> {
+  const first = await api<P>(`${path}${path.includes("?") ? "&" : "?"}limit=100`);
   const items = [...first.items];
   while (items.length < first.total && items.length % 100 === 0) {
-    const more = await api<CompliancePage<T>>(
+    const more = await api<P>(
       `${path}${path.includes("?") ? "&" : "?"}limit=100&offset=${items.length}`,
     );
     if (more.items.length === 0) break;
@@ -241,22 +243,23 @@ async function load(id: string) {
   const assetPath = encodeURIComponent(id);
   const me = await api<Me>("/auth/me");
   const admin = me.role === "admin";
-  const [asset, history, evidence, reviews, policies, incidents, frameworks, people] =
+  const [asset, history, evidence, reviews, policies, incidents, frameworks, people, risk] =
     await Promise.all([
       api<AssetDetail>(`/governance/assets/${assetPath}`),
       api<Page<HistoryEntry>>(`/governance/assets/${assetPath}/history?limit=100`),
       api<Page<Evidence>>(`/governance/evidence?asset_id=${assetPath}&limit=100`),
       api<Page<Review>>(`/governance/approvals?asset_id=${assetPath}&limit=1`),
-      api<Page<GovernancePolicy>>("/governance/policies?limit=100"),
+      allPages<Page<GovernancePolicy>>("/governance/policies"),
       api<Page<RelatedIncident>>(`/incidents?asset_id=${assetPath}&limit=25`),
       api<CompliancePage<Framework>>("/governance/frameworks"),
       // The owner pickers list real users, and only an administrator can edit the profile.
-      admin ? api<Page<Person>>("/governance/people?limit=100") : Promise.resolve(null),
+      admin ? allPages<Page<Person>>("/governance/people") : Promise.resolve(null),
+      api<RiskResponse>(`/governance/assets/${assetPath}/risk`),
     ]);
   const linked = new Set(evidence.items.flatMap((item) => item.control_ids));
-  const controls = linked.size > 0 ? await allPages<Control>("/governance/controls") : null;
+  const controls = linked.size > 0 ? await allPages<CompliancePage<Control>>("/governance/controls") : null;
   return { admin, asset, history, evidence, reviews, policies, incidents, frameworks, people,
-    controls, linked };
+    controls, linked, risk };
 }
 
 export default async function AssetPage({ params }: { params: Promise<{ id: string }> }) {
@@ -270,7 +273,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
     throw error;
   }
   const { admin, asset, history, evidence, reviews, policies, incidents, frameworks, people,
-    controls, linked } = data;
+    controls, linked, risk } = data;
 
   const review = reviews.items[0];
   const versions = new Map(
@@ -290,7 +293,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
       >
         {admin && <AssessForm assetId={asset.id} />}
       </PageHeader>
-      <AssetSummary asset={asset} />
+      <AssetSummary asset={asset} stale={staleNote(asset, risk, history.items)} />
 
       <Section title="Profile">
         <p className="border-b border-line px-3 py-2 text-xs text-muted">

@@ -232,6 +232,15 @@ async function methodologyOf(id: string): Promise<Methodology> {
   return found as Methodology;
 }
 
+// A precondition, so a test that needs a reviewer does not grant the role as a hidden side effect.
+async function ensureReviewerGrant(admin: Headers) {
+  const people = await get<{
+    items: { id: string; email: string; reviewer_grant_id: string | null }[];
+  }>("/governance/people?limit=100");
+  const person = people.items.find((item) => item.email.startsWith("reviewer@"))!;
+  if (!person.reviewer_grant_id) await post("/governance/role-grants", { user_id: person.id }, admin);
+}
+
 test("admin saves a profile with owners picked from real users", async ({ page }) => {
   const asset = await newAsset(`synthetic-e2e-${randomUUID().slice(0, 8)}`, "medium");
   const people = await get<{ items: { id: string; email: string }[] }>("/governance/people");
@@ -387,13 +396,7 @@ test("asset page shows policies, history, evidence, mappings, and related incide
 }) => {
   const admin = await adminHeaders();
   const reviewer = await headersFor("reviewer");
-  const people = await get<{
-    items: { id: string; email: string; reviewer_grant_id: string | null }[];
-  }>("/governance/people");
-  const reviewerPerson = people.items.find((person) => person.email.startsWith("reviewer@"))!;
-  if (!reviewerPerson.reviewer_grant_id) {
-    await post("/governance/role-grants", { user_id: reviewerPerson.id }, admin);
-  }
+  await ensureReviewerGrant(admin);
 
   // A policy for a narrow kind of asset, so other assets in this organization are not affected.
   const policyName = `synthetic-e2e-policy-${randomUUID().slice(0, 8)}`;
@@ -420,108 +423,118 @@ test("asset page shows policies, history, evidence, mappings, and related incide
   const versionPath = `/governance/policies/${policy.id}/versions/${version.id}`;
   await post(`${versionPath}/approve`, {}, reviewer);
   await post(`${versionPath}/activate`, {}, admin);
+  try {
 
-  const asset = await newAsset(`synthetic-e2e-${randomUUID().slice(0, 8)}`, "medium");
-  await post(profilePath(asset.id), { ...LOW_PROFILE, asset_type: "model_provider" });
-  const agent = await post<{ id: string }>("/agents", {
-    asset_id: asset.id,
-    name: `synthetic-e2e-agent-${randomUUID().slice(0, 8)}`,
-    owner: "Synthetic E2E",
-  });
-  const credential = await post<{ key: string }>(`/agents/${agent.id}/credentials`, {});
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(`${API}/gateway/actions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${credential.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        idempotency_key: randomUUID(),
-        tool: "run_shell_command",
-        resource_id: null,
-        params: {},
-      }),
+    const asset = await newAsset(`synthetic-e2e-${randomUUID().slice(0, 8)}`, "medium");
+    await post(profilePath(asset.id), { ...LOW_PROFILE, asset_type: "model_provider" });
+    const agent = await post<{ id: string }>("/agents", {
+      asset_id: asset.id,
+      name: `synthetic-e2e-agent-${randomUUID().slice(0, 8)}`,
+      owner: "Synthetic E2E",
     });
-    expect(response.status).toBe(200);
-  }
-  await waitForIncident(agent.id, admin);
-  await post(`/governance/assets/${asset.id}/assess`, {});
-  const review = await post<{ required_controls: { applicable_version_ids: string[] } }>(
-    `/governance/assets/${asset.id}/submit`,
-    { reason: "Synthetic e2e submission" },
-  );
-  expect(review.required_controls.applicable_version_ids).toContain(version.id);
-
-  // An attestation, so the page must not present it as a recomputed hash.
-  const controls = await get<{ items: { id: string; identifier: string }[]; statement: string }>(
-    "/governance/controls?limit=1",
-  );
-  const control = controls.items[0]!;
-  const evidence = await post<{ id: string }>("/governance/evidence", {
-    asset_id: asset.id,
-    category: "model_evaluation",
-    description: `Synthetic e2e evidence ${randomUUID().slice(0, 8)}`,
-    source: {
-      source_type: "external_reference",
-      source_uri: "https://example.test/synthetic-evaluation",
-      content_sha256: "a".repeat(64),
-    },
-    control_ids: [control.id],
-  });
-  await post(
-    `/governance/evidence/${evidence.id}/verify`,
-    { outcome: "VERIFIED", method: "manual_attestation", note: "Synthetic attestation" },
-    reviewer,
-  );
-
-  const history = await get<{ items: { seq: number; type: string }[] }>(
-    `/governance/assets/${asset.id}/history`,
-  );
-  const evidenceList = await get<{ items: { description: string }[] }>(
-    `/governance/evidence?asset_id=${asset.id}`,
-  );
-  const incidents = await get<{ items: { id: string; title: string }[] }>(
-    `/incidents?asset_id=${asset.id}`,
-  );
-  const frameworks = await get<{ items: { name: string; library_status: string }[] }>(
-    "/governance/frameworks",
-  );
-
-  await signIn(page, "reviewer");
-  await page.goto(`/governance/assets/${asset.id}`);
-
-  const policies = region(page, "Policies");
-  await expect(policies).toContainText(policyName);
-  await expect(policies).toContainText(`Version ${version.version}`);
-  await expect(policies).toContainText("required_human_oversight");
-
-  const rows = region(page, "History").getByRole("row");
-  await expect(rows).toHaveCount(history.items.length + 1);
-  for (const [index, entry] of history.items.entries()) {
-    // The audit sequence is the order, so the rows must follow the API's order.
-    await expect(rows.nth(index + 1).getByRole("cell").first()).toHaveText(String(entry.seq));
-  }
-
-  const proof = region(page, "Evidence");
-  await expect(proof).toContainText(evidenceList.items[0]!.description);
-  await expect(proof).toContainText("Verified");
-  await expect(proof).toContainText("Manual attestation");
-  await expect(proof).toContainText("Nothing was recomputed");
-  await expect(proof).not.toContainText("Hash recomputed");
-
-  const mappings = region(page, "Control mappings");
-  await expect(mappings).toContainText(control.identifier);
-  await expect(mappings).toContainText(controls.statement);
-  for (const framework of frameworks.items) {
-    await expect(mappings).toContainText(framework.name);
-  }
-  await expect(mappings).toContainText("Not loaded");
-
-  const related = region(page, "Related incidents");
-  expect(incidents.items.length).toBeGreaterThan(0);
-  for (const incident of incidents.items) {
-    await expect(related.getByRole("link", { name: incident.title })).toHaveAttribute(
-      "href",
-      `/incidents/${incident.id}`,
+    const credential = await post<{ key: string }>(`/agents/${agent.id}/credentials`, {});
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(`${API}/gateway/actions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${credential.key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idempotency_key: randomUUID(),
+          tool: "run_shell_command",
+          resource_id: null,
+          params: {},
+        }),
+      });
+      expect(response.status).toBe(200);
+    }
+    await waitForIncident(agent.id, admin);
+    await post(`/governance/assets/${asset.id}/assess`, {});
+    const review = await post<{ required_controls: { applicable_version_ids: string[] } }>(
+      `/governance/assets/${asset.id}/submit`,
+      { reason: "Synthetic e2e submission" },
     );
+    expect(review.required_controls.applicable_version_ids).toContain(version.id);
+
+    // An attestation, so the page must not present it as a recomputed hash.
+    const controls = await get<{ items: { id: string; identifier: string }[]; statement: string }>(
+      "/governance/controls?limit=1",
+    );
+    const control = controls.items[0]!;
+    const evidence = await post<{ id: string }>("/governance/evidence", {
+      asset_id: asset.id,
+      category: "model_evaluation",
+      description: `Synthetic e2e evidence ${randomUUID().slice(0, 8)}`,
+      source: {
+        source_type: "external_reference",
+        source_uri: "https://example.test/synthetic-evaluation",
+        content_sha256: "a".repeat(64),
+      },
+      control_ids: [control.id],
+    });
+    await post(
+      `/governance/evidence/${evidence.id}/verify`,
+      { outcome: "VERIFIED", method: "manual_attestation", note: "Synthetic attestation" },
+      reviewer,
+    );
+
+    const history = await get<{ items: { seq: number; type: string }[] }>(
+      `/governance/assets/${asset.id}/history`,
+    );
+    const evidenceList = await get<{ items: { description: string }[] }>(
+      `/governance/evidence?asset_id=${asset.id}`,
+    );
+    const incidents = await get<{ items: { id: string; title: string }[] }>(
+      `/incidents?asset_id=${asset.id}`,
+    );
+    const frameworks = await get<{ items: { name: string; library_status: string }[] }>(
+      "/governance/frameworks",
+    );
+
+    await signIn(page, "reviewer");
+    await page.goto(`/governance/assets/${asset.id}`);
+
+    const policies = region(page, "Policies");
+    await expect(policies).toContainText(policyName);
+    await expect(policies).toContainText(`Version ${version.version}`);
+    await expect(policies).toContainText("required_human_oversight");
+
+    const rows = region(page, "History").getByRole("row");
+    await expect(rows).toHaveCount(history.items.length + 1);
+    for (const [index, entry] of history.items.entries()) {
+      // The audit sequence is the order, so the rows must follow the API's order.
+      await expect(rows.nth(index + 1).getByRole("cell").first()).toHaveText(String(entry.seq));
+    }
+
+    const proof = region(page, "Evidence");
+    await expect(proof).toContainText(evidenceList.items[0]!.description);
+    await expect(proof).toContainText("Verified");
+    await expect(proof).toContainText("Manual attestation");
+    await expect(proof).toContainText("Nothing was recomputed");
+    await expect(proof).not.toContainText("Hash recomputed");
+
+    const mappings = region(page, "Control mappings");
+    await expect(mappings).toContainText(control.identifier);
+    await expect(mappings).toContainText(controls.statement);
+    for (const framework of frameworks.items) {
+      await expect(mappings).toContainText(framework.name);
+    }
+    await expect(mappings).toContainText("Not loaded");
+
+    const related = region(page, "Related incidents");
+    expect(incidents.items.length).toBeGreaterThan(0);
+    for (const incident of incidents.items) {
+      await expect(related.getByRole("link", { name: incident.title })).toHaveAttribute(
+        "href",
+        `/incidents/${incident.id}`,
+      );
+    }
+  } finally {
+    // The policy would otherwise stay active for every later submission in this organization.
+    await post(`${versionPath}/deactivate`, {}, admin);
+    const policies = await get<{ items: { id: string; versions: { id: string; active: boolean }[] }[] }>(
+      "/governance/policies?limit=100",
+    );
+    const stored = policies.items.find((item) => item.id === policy.id)!;
+    expect(stored.versions.find((item) => item.id === version.id)!.active).toBe(false);
   }
 });
 
@@ -556,4 +569,34 @@ test("viewer sees no edit controls and a direct mutation is refused", async ({ p
   );
   expect(detail.profile.version).toBe(1);
   expect(detail.profile.profile.description).toBe("Synthetic viewer check");
+});
+
+test("a profile change after an assessment is flagged as needing reassessment", async ({
+  page,
+}) => {
+  const asset = await newAsset(`synthetic-e2e-${randomUUID().slice(0, 8)}`, "low");
+  await post(profilePath(asset.id), LOW_PROFILE);
+  await post(`/governance/assets/${asset.id}/assess`, {});
+  await post(profilePath(asset.id), { ...LOW_PROFILE, description: "Changed after assessment" });
+
+  const detail = await get<{ profile: { version: number } }>(`/governance/assets/${asset.id}`);
+  expect(detail.profile.version).toBe(2);
+  const note = "Assessed against profile version 1; the current profile is version 2; reassessment needed";
+
+  // Every role sees it, on both pages.
+  for (const role of ["viewer", "admin"]) {
+    await signIn(page, role);
+    for (const suffix of ["", "/risk"]) {
+      await page.goto(`/governance/assets/${asset.id}${suffix}`);
+      await expect(region(page, "Summary")).toContainText(note);
+    }
+    await expect(region(page, "Result")).toContainText(note);
+    await page.context().clearCookies();
+  }
+
+  // A fresh assessment of the current profile clears the note.
+  await post(`/governance/assets/${asset.id}/assess`, {});
+  await signIn(page, "viewer");
+  await page.goto(`/governance/assets/${asset.id}/risk`);
+  await expect(page.getByText("reassessment needed")).toHaveCount(0);
 });

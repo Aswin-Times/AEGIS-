@@ -1,7 +1,27 @@
+import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { NotGovernedBadge, RiskLabel, StatusBadge, SyntheticBadge } from "@/components/ui";
 import { formatTime } from "@/lib/format";
-import type { AssetDetail } from "@/lib/governance-types";
+import type { AssetDetail, HistoryEntry, RiskResponse } from "@/lib/governance-types";
+
+/**
+ * An assessment describes the profile it was run on. When the profile has changed since, the
+ * stored level is out of date, and every reader is told so.
+ */
+export function staleNote(
+  asset: AssetDetail,
+  risk: RiskResponse,
+  history: HistoryEntry[],
+): string | null {
+  const assessment = risk.assessment;
+  if (!assessment || !asset.profile || assessment.profile_version_id === asset.profile.id) {
+    return null;
+  }
+  const assessed = history.find(
+    (entry) => entry.type === "profile_version" && entry.id === assessment.profile_version_id,
+  )?.profile_version?.version;
+  return `Assessed against ${assessed === undefined ? "an earlier profile version" : `profile version ${assessed}`}; the current profile is version ${asset.profile.version}; reassessment needed`;
+}
 
 function Item({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -13,7 +33,7 @@ function Item({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /** What the inventory row says about an asset. Declared and assessed risk are labeled apart. */
-export function AssetSummary({ asset }: { asset: AssetDetail }) {
+export function AssetSummary({ asset, stale }: { asset: AssetDetail; stale: string | null }) {
   return (
     <section
       aria-label="Summary"
@@ -48,6 +68,12 @@ export function AssetSummary({ asset }: { asset: AssetDetail }) {
         <Item label="Approval valid until">{formatTime(asset.valid_until)}</Item>
         <Item label="Next review">{formatTime(asset.next_review_at)}</Item>
       </dl>
+      {stale && (
+        <p className="mt-3 flex items-center gap-1.5 font-medium text-hold">
+          <AlertTriangle aria-hidden size={14} />
+          {stale}.
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap items-center gap-3">
         {asset.is_synthetic && <SyntheticBadge />}
         <span className="text-xs text-muted">Registered {formatTime(asset.created_at)}</span>

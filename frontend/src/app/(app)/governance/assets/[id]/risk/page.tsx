@@ -15,16 +15,18 @@ import { formatTime, humanize, shortId } from "@/lib/format";
 import type {
   AssessmentSummary,
   AssetDetail,
+  HistoryEntry,
   Methodology,
   RiskResponse,
 } from "@/lib/governance-types";
 import type { Me, Page } from "@/lib/types";
 import { AssessForm } from "../assess-form";
-import { AssetSummary } from "../asset-summary";
+import { AssetSummary, staleNote } from "../asset-summary";
 
 export const metadata = { title: "Risk assessment | AEGIS" };
 
-// The spec's wording. Shown on every risk page, whatever the methodology document adds.
+// The spec's wording, true of the built-in methodology only. A methodology a tenant wrote says
+// where its own numbers come from in its stored provenance note, and nothing is claimed for it.
 const JUDGMENT_STATEMENT =
   "The weights, level maps, thresholds, and floors are engineering judgment, not values taken from any standard or regulation. Review them before relying on the result.";
 
@@ -42,13 +44,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 async function load(id: string) {
   const assetPath = encodeURIComponent(id);
   const me = await api<Me>("/auth/me");
-  const [asset, risk, history, methodologies] = await Promise.all([
+  const [asset, risk, history, methodologies, changes] = await Promise.all([
     api<AssetDetail>(`/governance/assets/${assetPath}`),
     api<RiskResponse>(`/governance/assets/${assetPath}/risk`),
     api<Page<AssessmentSummary>>(`/governance/assets/${assetPath}/assessments?limit=25`),
     api<Page<Methodology>>("/governance/methodologies?limit=100"),
+    api<Page<HistoryEntry>>(`/governance/assets/${assetPath}/history?limit=100`),
   ]);
-  return { admin: me.role === "admin", asset, risk, history, methodologies };
+  return { admin: me.role === "admin", asset, risk, history, methodologies, changes };
 }
 
 export default async function RiskPage({ params }: { params: Promise<{ id: string }> }) {
@@ -61,7 +64,8 @@ export default async function RiskPage({ params }: { params: Promise<{ id: strin
     if (error instanceof ApiError && error.status === 403) return <PermissionDenied />;
     throw error;
   }
-  const { admin, asset, risk, history, methodologies } = data;
+  const { admin, asset, risk, history, methodologies, changes } = data;
+  const stale = staleNote(asset, risk, changes.items);
   const { assessment } = risk;
   const result = assessment?.result ?? null;
 
@@ -89,7 +93,7 @@ export default async function RiskPage({ params }: { params: Promise<{ id: strin
       >
         {admin && <AssessForm assetId={asset.id} />}
       </PageHeader>
-      <AssetSummary asset={asset} />
+      <AssetSummary asset={asset} stale={stale} />
 
       <Section title="Result">
         {!assessment ? (
@@ -123,6 +127,11 @@ export default async function RiskPage({ params }: { params: Promise<{ id: strin
               Run {formatTime(assessment.assessed_at)} by user {shortId(assessment.assessed_by)}.
               Methodology version {assessment.methodology_version}.
             </p>
+            {stale && (
+              <p role="alert" className="font-medium text-hold">
+                {stale}. The level above describes the earlier profile.
+              </p>
+            )}
             {risk.recomputed_matches === true && (
               <p className="text-xs text-muted">
                 Recomputed now from the stored input and methodology: matches the stored result.
@@ -238,7 +247,7 @@ export default async function RiskPage({ params }: { params: Promise<{ id: strin
 
       <Section title="Methodology">
         <div className="space-y-2 p-3">
-          <p>{JUDGMENT_STATEMENT}</p>
+          {(!methodology || methodology.created_by === null) && <p>{JUDGMENT_STATEMENT}</p>}
           {methodology ? (
             <>
               <p>
@@ -247,7 +256,9 @@ export default async function RiskPage({ params }: { params: Promise<{ id: strin
                 {methodology.created_by === null && "Built-in methodology. "}Approved:{" "}
                 {methodology.approved ? "yes" : "no"}. Active: {methodology.active ? "yes" : "no"}.
               </p>
-              <p className="text-xs text-muted">{methodology.document.provenance_note}</p>
+              <p className={methodology.created_by === null ? "text-xs text-muted" : ""}>
+                {methodology.document.provenance_note}
+              </p>
               <p className="text-xs text-muted">
                 Thresholds: score below {methodology.document.thresholds.medium} is Low, below{" "}
                 {methodology.document.thresholds.high} is Medium, below{" "}

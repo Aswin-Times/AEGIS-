@@ -201,7 +201,7 @@ There is no route to create an incident. Only correlation can.
 
 | Method, path | Role | Notes |
 |--------------|------|-------|
-| `GET /incidents` | Any | Filter `status`, `severity`, `rule_key` |
+| `GET /incidents` | Any | Filter `status`, `severity`, `rule_key`, `asset_id` (incidents whose agent belongs to the asset; a UUID, 422 if malformed; an unknown or another tenant's id returns none) |
 | `GET /incidents/{incident_id}` | Any | Includes `transitions` and `rule_definition`, which is `null` if the rule fails its integrity check |
 | `GET /incidents/{incident_id}/events` | Any | The source events |
 | `GET /incidents/{incident_id}/timeline` | Any | Rebuilt from stored records on each request |

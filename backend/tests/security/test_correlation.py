@@ -948,3 +948,33 @@ def test_the_worker_processes_events_without_being_asked(urls, jwt_key_path):
             time.sleep(0.1)
 
     assert len(incidents) == 1
+
+
+def test_incidents_filter_by_the_asset_of_their_agents(world, tenant):
+    tenant.allow_everything()
+    first, second = tenant.agent(), tenant.agent()
+    for agent in (first, second):
+        attempt_forbidden_tool(agent, 3)
+    correlate(world, tenant)
+
+    items = incidents_of(tenant, rule_key="repeated_unauthorized_tools")
+    assert {item["agent_id"] for item in items} == {first.id, second.id}
+
+    filtered = tenant.get("/incidents", asset_id=first.asset_id).json()
+    assert filtered["total"] == 1
+    assert [item["agent_id"] for item in filtered["items"]] == [first.id]
+    assert tenant.get("/incidents", asset_id=str(uuid4())).json()["total"] == 0
+
+
+def test_the_incident_asset_filter_rejects_bad_ids_and_other_tenants(world, tenant):
+    tenant.allow_everything()
+    agent = tenant.agent()
+    attempt_forbidden_tool(agent, 3)
+    correlate(world, tenant)
+    other = world.tenant()
+    foreign_asset = other.asset()["id"]
+
+    assert tenant.get("/incidents", asset_id="not-a-uuid").status_code == 422
+    # Another tenant's real asset id matches nothing, and the incident stays out of its view.
+    assert tenant.get("/incidents", asset_id=foreign_asset).json()["total"] == 0
+    assert other.get("/incidents", asset_id=agent.asset_id).json()["total"] == 0
