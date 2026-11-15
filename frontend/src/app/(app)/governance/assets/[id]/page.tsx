@@ -178,7 +178,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
       {admin && (
         <Section title="Submission">
           {openReview && (
-            <p role="status" className="border-b border-line px-3 py-2 text-sm">
+            <p className="border-b border-line px-3 py-2 text-sm">
               Submitted for review on {formatTime(openReview.submitted_at)}.{" "}
               {openReview.status === "INFO_REQUESTED"
                 ? "The reviewer has asked for information; submitting again replaces the review."

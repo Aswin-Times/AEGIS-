@@ -184,5 +184,6 @@ export async function submitForReview(
   revalidatePath(`/governance/assets/${assetId}`, "layout");
   revalidatePath("/governance/approvals");
   revalidatePath("/governance/assets");
-  return { saved: "Submitted for review. The required controls are now frozen on the review." };
+  // The section then shows the open review in place of this form, so there is no message to keep.
+  return {};
 }

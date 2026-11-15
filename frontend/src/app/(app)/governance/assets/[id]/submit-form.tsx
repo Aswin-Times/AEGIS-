@@ -14,7 +14,7 @@ export function SubmitForm({ assetId }: { assetId: string }) {
       <input type="hidden" name="asset_id" value={assetId} />
       <Field
         label="Submission reason"
-        hint="Recorded with the submission. Applicable policies are matched now and frozen on the review."
+        hint="Recorded with the submission. Applicable policies are matched now and frozen on the review. This cannot be undone: the asset becomes Under review until a reviewer decides."
         error={state.fieldErrors?.reason}
       >
         {({ id, describedBy, invalid }) => (
@@ -41,11 +41,6 @@ export function SubmitForm({ assetId }: { assetId: string }) {
       {state.error && (
         <p role="alert" className="text-sm text-deny">
           {state.error}
-        </p>
-      )}
-      {state.saved && (
-        <p role="status" className="text-sm text-allow">
-          {state.saved}
         </p>
       )}
     </form>
