@@ -241,7 +241,7 @@ All under `/api/v1/governance`, taken from `backend/src/aegis/api/routes_governa
 (`test_governance_audit.py::test_every_governance_route_refuses_an_agent` sweeps all of them). The
 tenant always comes from the principal. Lists are `Page[...]` as above. "Holder" means a user who
 holds an unrevoked `governance_reviewer` grant and is still an active `admin` or `reviewer`. Every
-write is audited in its own transaction.
+write is audited in the same transaction as the write.
 
 ### People and role grants
 

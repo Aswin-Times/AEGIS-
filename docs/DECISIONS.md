@@ -229,7 +229,7 @@ Loading it needs a licensed copy, AEGIS-written descriptions, and a new seeding 
 existing tenants. AEGIS does not claim compliance with ISO/IEC 42001.
 
 ## D-035: Database errors are logged without their parameters
-**Decision:** The engine is created with `hide_parameters=True`. **Why:** Found in the Task 21
+**Decision:** The runtime engine, and the owner-role engines in `aegis.provisioning`, are created with `hide_parameters=True`. **Why:** Found in the Task 21
 audit: a NUL byte in inline evidence made PostgreSQL refuse the insert after validation, and the
 500 handler logged the SQLAlchemy error, whose text included every bound value, so the evidence
 text reached the logs. **Cost:** Database errors in the logs no longer show the values, which makes
@@ -272,6 +272,8 @@ of the cost if the ruling is wrong.
 28. **Task 7.** review saw c829f70; 1 Important (effective window outside the hash), fix round 1 dispatched. Ruling: review_overdue on VersionedDocument and the event-guard trigger stand — both sound — cost if wrong: small refactor.
 29. **Task 8.** awaiting_approval counts UNDER_REVIEW assets, not review rows — equal whenever reviews come from submit, and it keeps the Task 4 contract test unchanged — cost if wrong: count differs only for state written outside the service.
 30. **Task 8.** review saw d1ad904; 3 Important; fix round 1 dispatched. Ruling: Ruling 10 amended: frozen_hash added to the SUBMIT audit payload and compared on decision reads; reviewer_id added to the ASSIGN_REVIEWER payload — anchors the self-approval flag in the audit chain, leaving T11 as the only remaining limit — cost if wrong: two payload keys.
+    *Note:* "Ruling 10" here is the tenth ruling the controller made during Task 8's review (on what
+    the audit chain anchors), not preflight ruling R10 (`TenantWorld.login_as`, item 10 above).
 31. **Task 8.** One tampered review 503s the whole tenant's review list and overview — fail closed, consistent with policy and methodology behavior — cost if wrong: an operator loses those views until the row is addressed.
 32. **Task 9.** While a review is INFO_REQUESTED, reject is allowed and approve is refused with 409 REVIEW_AWAITING_INFORMATION — an approver should not approve past their own open question, but must be able to end a stalled review — cost if wrong: one extra resubmit.
 33. **Task 9.** denied_actions validated against catalog actions, and owner columns checked against the canonical profile — both fail safe — cost if wrong: small.
@@ -304,3 +306,4 @@ of the cost if the ruling is wrong.
 60. **Task 20.** the browser workflow test lives in a new file governance-workflow.spec.ts (governance.spec.ts is 600 lines) — cost if wrong: none.
 61. **Task 20.** the admin-only Submission section on the asset page is kept (backend route is AdminDep, spec 7.5, spec 14 needs a submit control in the dashboard) — cost if wrong: move it.
 62. **Task 20.** the ConfirmAction form-reset bug (Tasks 18-19 code) is fixed in this round, not deferred, because a corrected resubmission could record the opposite verification outcome — cost if wrong: none.
+63. **Task 21.** the two tests appended to tests/security/test_correlation.py in Task 17 (a761aa6) are additions only; no existing assertion changed, so they are within the permitted ways (moving the incident asset_id contract test there) — cost if wrong: move them.

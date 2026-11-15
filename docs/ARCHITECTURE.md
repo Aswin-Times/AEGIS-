@@ -138,7 +138,7 @@ because the gateway compares `valid_until` with its own clock.
 | Tool raises | `execution=FAILED`, audited; the error detail is not returned to the caller |
 | Outcome write fails after the tool ran | Execution remains `STARTED`; logged; visible as unresolved |
 | Tenant context missing | RLS returns zero rows, writes are rejected |
-| Governance check raises | `enforce`: deny, `GOVERNANCE_EVALUATION_ERROR`. `observe`: recorded; a retired or hard-blocked asset is still denied |
+| Governance check raises | A retired or hard-blocked asset is denied in both modes with `GOVERNANCE_RETIRED` or `GOVERNANCE_BLOCKED`. Any other asset: `enforce` denies with `GOVERNANCE_EVALUATION_ERROR`; `observe` records that code and does not block |
 | Governance record fails its hash | Conditions: deny in both modes. Policies, methodologies, profiles, assessments, reviews: 503 |
 | Review worker fails | Logged and retried; the gateway is unaffected |
 | API started with a superuser, `BYPASSRLS`, or table-owning role | The process refuses to start |

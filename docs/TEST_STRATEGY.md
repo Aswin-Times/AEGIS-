@@ -107,9 +107,9 @@ proves nothing for it; it is treated as a failure, like `SURVIVED`.
 
 | Check | Result |
 |-------|--------|
-| Backend, `pytest -q -rs` | 1352 passed, 0 failed, 0 skipped (18 min 49 s) |
+| Backend, `pytest -q -rs` | 1352 passed, 0 failed, 0 skipped (18 min 49 s). After fix round 1 added three tests: 1355 passed, 0 failed, 0 skipped |
 | `ruff check src tests scripts migrations` | Clean |
-| `scripts/mutation_check.py`, all mutations in one pass | 157 of 157 caught; 0 `SURVIVED`, 0 `STALE` |
+| `scripts/mutation_check.py`, all mutations in one pass | 157 of 157 caught; 0 `SURVIVED`, 0 `STALE`. Fix round 1 added a 158th (provisioning parameters), run alone and caught; the full pass was not repeated |
 | Frontend `npm run lint`, `npm run typecheck`, `npm run build` | All clean |
 | Frontend `npm run test:e2e`, Microsoft Edge, against the dev stack | 68 passed, 0 failed, 0 skipped |
 

@@ -105,7 +105,9 @@ The design is in
 [docs/superpowers/specs/2026-11-03-governance-engine-design.md](docs/superpowers/specs/2026-11-03-governance-engine-design.md)
 and the build plan in
 [docs/superpowers/plans/2026-11-03-governance-engine.md](docs/superpowers/plans/2026-11-03-governance-engine.md).
-Every piece was built test-first and reviewed before it was committed. "Proven" below means an
+Each task was reviewed after it was committed, and every fix was reviewed again. Most code was
+written test-first; the exceptions are recorded in the build ledger (in Task 11 the implementation
+came before its tests, and in Task 17 the failing run was shown only after the fact). "Proven" below means an
 automated test attempts the failure against real PostgreSQL (or a real browser) and passes.
 
 | Piece | What it does | Built | Proven by tests | Not proven |
@@ -188,7 +190,6 @@ Open `http://127.0.0.1:3000` and sign in with those credentials. Delete `backend
 Every start also runs the demo seed, which only adds what is missing. If a later seed fails, the API
 keeps serving and prints the error type; a failure of the very first seed stops the start.
 
-
 ### Docker Compose
 
 Not run yet: the development machine has no Docker. The file is provided as-is.
@@ -219,7 +220,7 @@ cd backend
 .venv/Scripts/python -m pytest
 ```
 
-In the last full run (2026-11-15, on `phase-3-governance`), 1352 backend tests passed, none failed,
+In the last full run (2026-11-15, on `phase-3-governance`), 1355 backend tests passed, none failed,
 and none were skipped; the 68 browser tests passed with none skipped. Counts come from that run and
 will drift as tests are added. The tests start their own temporary PostgreSQL, or use
 `AEGIS_TEST_ADMIN_URL` if it is set, run the real migrations, and connect as the restricted runtime role,
@@ -231,7 +232,8 @@ cd backend
 ```
 
 This removes each security control in a temporary copy of the code and requires at least one test to fail.
-In the last full pass (2026-11-15) all 157 removed controls were caught.
+In the last full pass (2026-11-15) all 157 removed controls were caught; one mutation added since
+was run alone and caught.
 A control that no test notices is reported as uncaught.
 
 ```bash

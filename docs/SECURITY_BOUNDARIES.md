@@ -76,9 +76,7 @@ lists them with their threats.
 - Governance is asset-level. All agents of an asset share its status.
 - Two admins can grant each other `governance_reviewer` and collude. A stolen admin session can grant
   it to another account. Both are audited, not prevented.
-- Someone with database control can forge governance records as they can any other. Some read
-  paths (counted votes, review status, evidence verifications) trust stored rows without
-  re-checking their audit events.
+- Someone with database control can forge governance records as they can any other. Only two reads compare a row with its own audit event: a review's frozen values are compared with its `SUBMIT` decision's audit payload when a decision is made (`approvals.py` `verify_review_anchored`), and an evidence row is compared with its `evidence_submitted` event when it is verified. Other rows are checked at most against a hash stored in the same row, which someone who can write the row can recompute: policy and methodology versions, review `frozen_hash`, decision `conditions_hash` (the gateway reads conditions from the decision row alone), and profile hashes at submission and decision. Nothing compares decision rows, counted votes, review status and withdrawals, evidence verifications, control assessments, or policy and methodology events with their audit events; `run_assessment` reads the current profile without checking its hash; and the `content_hash`, `input_hash`, and `result_hash` values written into audit payloads are never read back.
 - External documents over 16,000 bytes can only be attested, not hash-checked.
 - A verification by a reviewer whose grant is later revoked still counts.
 - An expired but unprocessed approval is handled by the gateway's own clock; the review worker only
@@ -105,7 +103,7 @@ lists them with their threats.
 | Execution claim conflict | 409, no execution |
 | Approval state check | 409, no execution |
 | Action hash mismatch | Approval cancelled, no execution |
-| Governance check raises | `enforce`: deny, `GOVERNANCE_EVALUATION_ERROR`. `observe`: recorded and not blocking, except a retired or hard-blocked asset, which is still denied |
+| Governance check raises | A retired or hard-blocked asset is denied in both modes with `GOVERNANCE_RETIRED` or `GOVERNANCE_BLOCKED`. Any other asset: `enforce` denies with `GOVERNANCE_EVALUATION_ERROR`; `observe` records that code and does not block |
 | Governance check hits a database error | Rollback, 503, no execution, in both modes |
 | Stored conditions fail their hash or no longer parse | Deny, `GOVERNANCE_INTEGRITY_FAILED`, in both modes |
 | Stored governance policy, methodology, profile, assessment, or review fails its integrity check | 503 with the matching `*_INTEGRITY_FAILED` code |

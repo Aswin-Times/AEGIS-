@@ -8,9 +8,10 @@
 > (review statuses, `frozen_hash` in the `SUBMIT` payload, resubmission, approval while information
 > is requested), 10 (library statuses, the partial NIST library, how ISO could be loaded), 11.2
 > (an evaluation error on a blocked asset in `observe`), 11.4 (`FOR NO KEY UPDATE`), 12
-> (`409 ENFORCEMENT_MODE_UNCHANGED`), 13 (the review date as a trigger), and 17
-> (limits found while building). Every deviation ruled during the build is listed in
-> `docs/DECISIONS.md` under "Governance build rulings".
+> (`409 ENFORCEMENT_MODE_UNCHANGED`), 13 (the review date as a trigger), 15 (the browser workflow
+> file), and 17 (limits found while building). Sections 7.1, 7.4 and 13 also carry inline markers.
+> Every deviation ruled during the build is listed in `docs/DECISIONS.md` under "Governance build
+> rulings".
 
 ## 1. Goal
 
@@ -217,7 +218,8 @@ makes the asset and tenant columns immutable, requires `version` to increase by 
 `DELETE`. All transitions run under `SELECT ... FOR UPDATE` with optimistic version checks where a
 client supplies a version.
 
-Saving the first profile inserts the state row as `DRAFT`. Assessment is allowed in every state but
+*(Changed during the build: the spec named no owner for assessment's transitions, ruling R4,
+Task 6.)* Saving the first profile inserts the state row as `DRAFT`. Assessment is allowed in every state but
 `RETIRED`; from `DRAFT` or `REJECTED` it moves the asset to `ASSESSMENT_REQUIRED`, and elsewhere it
 leaves the status and the hard block unchanged. So the first assessment moves it to
 `ASSESSMENT_REQUIRED`, meaning a complete assessment of the current profile is needed before
@@ -257,7 +259,9 @@ version and evidence references go in the two join tables. The system actor is a
 
 ### 7.4 Reviews
 
-Review statuses are `OPEN`, `INFO_REQUESTED`, `DECIDED`, and `WITHDRAWN`. One open review per asset,
+*(Changed during the build: closed-review statuses and resubmission were unnamed, and the audit
+anchor was added after review, rulings R6, R7 and the Task 8 amendment to ruling 10, Task 8; approval
+while information is requested, Task 9 ruling.)* Review statuses are `OPEN`, `INFO_REQUESTED`, `DECIDED`, and `WITHDRAWN`. One open review per asset,
 by a partial unique index on status `OPEN` or `INFO_REQUESTED`. This is the duplicate-submission
 guard. `REQUEST_INFORMATION` sets the review to `INFO_REQUESTED` and leaves the asset
 `UNDER_REVIEW`. The submitter responds by adding evidence and then submitting again: a submission
@@ -420,8 +424,10 @@ already approved, as disabling an agent does today.
 
 **Failures.** An exception in the check yields a deny in `enforce` with
 `GOVERNANCE_EVALUATION_ERROR`. In `observe` it is recorded and does not block, because `observe`
-exists to guarantee no new outage, except that rows 1 and 2 are read from the state row alone and
-still deny a retired or hard-blocked asset, since a person's decision applies in both modes. A database failure aborts the transaction and returns 503 in both
+exists to guarantee no new outage. In both modes, rows 1 and 2 are read from the state row alone
+when the check fails, so a retired or hard-blocked asset is still denied with `GOVERNANCE_RETIRED`
+or `GOVERNANCE_BLOCKED`, since a person's decision applies in both modes (changed in the Task 21
+audit). A database failure aborts the transaction and returns 503 in both
 modes, as it does today.
 
 ### 11.3 Conditions
@@ -527,8 +533,8 @@ POST  /role-grants/{id}/revoke
 
 `worker.py` follows `CorrelationWorker`: a polling thread, disabled in tests, with settings
 `governance_worker_enabled` and `governance_review_poll_seconds`. For each due asset it records a
-system `REQUIRE_REASSESSMENT` decision through the normal lifecycle, one asset per transaction. An
-approved asset is due when `valid_until` or `next_review_at` has passed. A passed review date can
+system `REQUIRE_REASSESSMENT` decision through the normal lifecycle, one asset per transaction. *(Changed during
+the build: the review date as a trigger was made explicit, Task 15 ruling.)* An approved asset is due when `valid_until` or `next_review_at` has passed. A passed review date can
 therefore turn a pass into a hold in `enforce`, exactly as a person's `/reassess` does; expiry
 itself is computed by the gateway, so the worker never changes that verdict.
 
@@ -579,7 +585,7 @@ Tests are written first, per milestone, against real PostgreSQL as `aegis_app`.
 | Review scheduling | `security/test_governance_reviews.py` |
 | Concurrent transitions | `test_concurrent_*` with real threads, in the approval and gateway files |
 | Failure recovery | Rollback on audit failure, worker failure, evaluation error, in the same files |
-| Full workflow | `security/test_governance_workflow.py`, `frontend/e2e/governance.spec.ts` |
+| Full workflow | `security/test_governance_workflow.py`, `frontend/e2e/governance-workflow.spec.ts` (built in its own file instead of `governance.spec.ts`, ledger ruling, Task 20) |
 
 Specific tests this design needs:
 
