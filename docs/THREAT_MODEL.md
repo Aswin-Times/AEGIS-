@@ -1,6 +1,7 @@
 # AEGIS Threat Model
 
-**Status legend:** `Implemented` means code and a named test exist. `Planned` means
+**Status legend:** `Implemented` means code and a named test exist. The Phase 3 threats (T27 to
+T35) use the plainer terms defined in their own section. `Planned` means
 designed but not built. The "Verification test" field names a file in
 `backend/tests/security/`, or says none exists. Status is kept current; see the table
 at the end.
@@ -65,7 +66,7 @@ at the end.
 - **Attack path:** Supply another tenant's resource ID, or omit a tenant filter in a new query.
 - **Existing mitigation:** RLS with `FORCE`, a `NOBYPASSRLS` runtime role, composite tenant foreign keys, and a tenant taken only from the verified principal.
 - **Required mitigation:** A test that fails if any new tenant table lacks RLS.
-- **Residual risk:** Low. A `SECURITY DEFINER` function is a controlled exception and is limited to returning a tenant ID for a slug.
+- **Residual risk:** Low. Three `SECURITY DEFINER` functions are controlled exceptions, and each returns IDs only: a tenant ID for a slug, and the tenant IDs with pending events or with due governance reviews.
 - **Verification test:** `test_tenant_isolation.py` and `test_tenant_isolation_db.py`, including `test_every_table_with_tenant_id_has_forced_rls`.
 
 ### T5. Agent identity spoofing
@@ -266,6 +267,114 @@ at the end.
 - **Residual risk:** One admin can resolve and close an incident alone, although that is recorded.
 - **Verification test:** `test_incident_lifecycle.py`.
 
+## Governance threats (Phase 3)
+
+These follow spec section 16. Status values: **mitigated and tested**, **mitigated, not fully
+tested**, **accepted**, **open**. Test files are in `backend/tests/security/` unless a path says
+otherwise. Each named test attempts the violation. The Task 21 audit tried each threat again
+against the code; what it found is in `test_governance_audit.py` and `REMEDIATION_PLAN.md`.
+
+### T27. Forged governance status
+- **Protected asset:** A2 (an asset's governance status, and so what the gateway allows).
+- **Attacker capability:** ADV1, ADV3, ADV4.
+- **Attack path:** An agent or a user sets an asset to `APPROVED` without a decision: through a route, an extra request field, a tenant field, or a direct `UPDATE` as the runtime role.
+- **Existing mitigation:** No route sets a status directly; every change is a recorded decision. Agent principals are refused on every governance route. Request schemas forbid unknown fields. `aegis_governance_state_guard` enforces the lifecycle table, a version step of one, immutable identity, and no `DELETE`. The gateway reads state inside its own transaction.
+- **Residual risk:** ADV4 can insert a consistent decision and state change by hand (T15), and ADV5 can do anything (T11).
+- **Verification test:** `test_governance_audit.py::test_every_governance_route_refuses_an_agent`, `test_governance_assets.py::test_trigger_rejects_invalid_transition`, `test_governance_assets.py::test_trigger_agrees_with_the_transition_table`, `test_governance_assets.py::test_unknown_or_invalid_profile_field_rejected`, `test_policy_enforcement.py::test_no_route_accepts_a_tenant_identifier`.
+- **Status:** Mitigated and tested, against the API and the runtime role.
+
+### T28. Self-approval
+- **Protected asset:** A3.
+- **Attacker capability:** ADV3 (an admin approving their own work).
+- **Attack path:** The submitter, an owner, or the author of a policy or methodology version approves it; an admin grants themselves the reviewer role; a person votes twice; a revoked or downgraded holder decides.
+- **Existing mitigation:** Self-approval and owner approval are refused unless a frozen, applicable policy permits them and none prohibits them. The reviewer grant cannot be self-granted (service and `CHECK`). Policy and methodology approvers must differ from the author (service, and a trigger for policies). A partial unique index stops one person counting twice. Authority is re-checked under the review lock, and only votes of current holders count.
+- **Residual risk:** Two admins can grant each other the role and collude; a stolen admin session can grant it to another account it controls. Both are audited, not prevented (spec 17).
+- **Verification test:** `test_governance_separation.py` (all), `test_governance_roles.py::test_admin_cannot_grant_reviewer_role_to_self`, `test_governance_roles.py::test_the_database_refuses_a_self_grant`, `test_governance_policies.py::test_approver_must_differ_from_creator`, `test_governance_assessments.py::test_methodology_approver_must_differ_from_creator`, `test_governance_approvals.py::test_same_person_cannot_vote_twice`, `test_governance_approvals.py::test_vote_of_revoked_holder_does_not_count`.
+- **Status:** Mitigated and tested. Collusion between two admins is accepted.
+
+### T29. Unblock through the lifecycle
+- **Protected asset:** A2.
+- **Attacker capability:** ADV3, or the review worker misbehaving.
+- **Attack path:** Lift a suspension, revocation, or rejection by moving the asset on: reassess, resubmit, let the worker run, or make a status-unchanged update, so that `observe` lets it act.
+- **Existing mitigation:** The hard block (DECISIONS D-029). The trigger lets it be cleared only by a move into an approved status. The gateway checks it first, and also treats a blocking status without its block as blocked. Since the Task 21 audit, a failed check in `observe` still denies a retired or blocked asset.
+- **Residual risk:** None known short of database control.
+- **Verification test:** `test_governance_gateway.py::test_suspended_stays_denied_through_reassessment_in_observe`, `test_governance_lifecycle_actions.py::test_hard_block_survives_reassessment_and_review`, `test_governance_assets.py::test_trigger_rejects_hard_block_clear_without_approval`, `test_governance_reviews.py::test_worker_never_clears_a_hard_block`, `test_governance_gateway.py::test_blocking_status_without_its_block_still_denies_in_observe`, `test_governance_audit.py::test_an_evaluation_error_never_lets_a_blocked_asset_through_in_observe`.
+- **Status:** Mitigated and tested. The last test was added by the Task 21 audit, which found that gap and fixed it.
+
+### T30. Stale approval
+- **Protected asset:** A2, A3.
+- **Attacker capability:** ADV1 (keeps acting), ADV3 (approves something that has changed).
+- **Attack path:** Keep using an approval after it expired, after grants or the profile changed, after a vote went stale, or across a reassessment that never finished.
+- **Existing mitigation:** Expiry is compared with the clock inside the gateway, so it does not wait for the worker. Submission and approval need an assessment of the current profile and grants. A grant added to an approved asset forces reassessment. Suspension, revocation, rejection and retirement clear `valid_until`.
+- **Residual risk:** The approver chooses `valid_until` and `next_review_at`, and nothing bounds them by a policy's `reassessment_interval_days` (REMEDIATION_PLAN risk 19). In `observe`, an expired approval is recorded, not enforced. An expired approval the worker has not processed is handled by the gateway; the worker only aligns the status.
+- **Verification test:** `test_governance_gateway.py::test_expired_approval_enforce_denies_observe_records`, `test_governance_gateway.py::test_exact_expiry_instant_is_expired`, `test_governance_reviews.py::test_gateway_verdict_is_the_same_before_and_after_the_worker_runs`, `test_governance_approvals.py::test_grant_change_after_assessment_blocks_submit`, `test_governance_approvals.py::test_grant_added_during_review_blocks_approval`, `test_governance_lifecycle_actions.py::test_added_grant_on_approved_asset_forces_reassessment`.
+- **Status:** Mitigated and tested, except the interval bound, which is open.
+
+### T31. Evidence laundering
+- **Protected asset:** A3, A4.
+- **Attacker capability:** ADV3.
+- **Attack path:** Make evidence count without an independent check: verify one's own evidence, cite another asset's or tenant's record, rewrite inline text and its hash together, or present a manual attestation as a checked hash.
+- **Existing mitigation:** Only a verification by a holder who is not the submitter counts (service and trigger). Inline hashes are computed by the server and recomputed at verification. Verification compares the row with its `evidence_submitted` audit event. Internal records must belong to the tenant and, for assessments and decisions, to the same asset (composite foreign keys). The method and `scope` are stored and shown. A control's status counts only currently verified, linked evidence.
+- **Residual risk:** An approval may cite evidence whatever its current verification status; the citation is a record, and the approval page shows each item's current status. Findings are frozen at submission, so a later rejection does not add a finding to an open review. A verification by a reviewer whose grant is later revoked still counts. External documents over the inline cap can only be attested. Read paths trust stored verification rows and do not re-anchor them to their audit events (T11). See REMEDIATION_PLAN risks 21 and 22.
+- **Verification test:** `test_governance_evidence.py::test_submitter_cannot_verify_own_evidence`, `test_governance_evidence.py::test_rewriting_text_and_hash_together_is_caught_by_the_submission_event`, `test_governance_evidence.py::test_internal_record_must_belong_to_this_asset`, `test_governance_evidence.py::test_evidence_cannot_reference_another_tenants_record`, `test_governance_evidence.py::test_approval_references_evidence_of_its_own_asset`, `test_governance_evidence.py::test_external_reference_without_content_is_manual_attestation_only`.
+- **Status:** Mitigated, not fully tested: the residual items above are accepted or open.
+
+### T32. Unsupported compliance claims
+- **Protected asset:** The honesty of what AEGIS reports.
+- **Attacker capability:** ADV3, or an over-eager reader.
+- **Attack path:** Mark a control implemented with no verified evidence, ship identifiers that are not in the source, or present a partial library as complete.
+- **Existing mitigation:** `IMPLEMENTED` and `PARTIALLY_IMPLEMENTED` need verified evidence linked to the control (service and trigger), and a stored claim whose evidence is no longer verified reads as `EVIDENCE_REQUIRED`. Shipped identifiers are checked against a list taken from the source. `library_status` and `source_control_count` show NIST AI RMF as partial (19 of 72 subcategories) and ISO/IEC 42001 as not loaded. Every compliance response carries the no-certification statement.
+- **Residual risk:** A verified piece of evidence can still be weak or beside the point; the mapping records what the evidence supports, not that the control works.
+- **Verification test:** `test_governance_compliance.py::test_implemented_refused_without_verified_evidence`, `test_governance_compliance.py::test_rejected_evidence_no_longer_supports_status`, `test_governance_compliance.py::test_iso_reports_not_loaded_with_zero_controls`, `test_governance_compliance.py::test_responses_carry_the_no_certification_statement`, `tests/unit/test_governance_frameworks.py`.
+- **Status:** Mitigated and tested.
+
+### T33. Methodology tampering
+- **Protected asset:** The risk level, and so which policies apply.
+- **Attacker capability:** ADV3, ADV4, ADV5.
+- **Attack path:** Activate an unapproved methodology, approve one's own, edit a stored version or assessment, or drop a factor so missing information is hidden.
+- **Existing mitigation:** Versions are append-only and hashed, and checked at every load (503 on mismatch). Approval needs a different holder; activation needs approval. A tenant methodology must keep all eight factors. `GET .../risk` recomputes the stored assessment and reports whether it matches, and decisions refuse an assessment that does not recompute.
+- **Residual risk:** The default weights are engineering judgment, not calibrated. Assessments trust declared profile inputs except tool access. ADV5 can rewrite a version and its hash (T11).
+- **Verification test:** `test_governance_assessments.py::test_tampered_methodology_hash_fails_closed`, `test_governance_assessments.py::test_tampered_assessment_reports_mismatch`, `test_governance_assessments.py::test_unapproved_methodology_cannot_be_activated`, `test_governance_assessments.py::test_methodology_omitting_a_factor_is_refused`, `test_governance_assessments.py::test_methodology_approver_must_differ_from_creator`.
+- **Status:** Mitigated and tested. Calibration and declared inputs are accepted limits.
+
+### T34. Governance data in logs
+- **Protected asset:** Evidence text and other request content.
+- **Attacker capability:** Anyone who can read the logs.
+- **Attack path:** Cause a database error on a write so that the logged exception carries the request's values.
+- **Existing mitigation:** Logs carry named fields only, and the evidence audit payloads carry its hash, never its text. Found in the Task 21 audit: a NUL byte in inline evidence made the insert fail after validation, and the logged SQLAlchemy error contained every bound value, including the evidence text. Fixed with `hide_parameters=True` (DECISIONS D-035).
+- **Residual risk:** The 500 handler still logs exception messages; an exception raised inside a service whose message echoes a value would be logged. A NUL byte still gives 500, not 422 (REMEDIATION_PLAN risk 23).
+- **Verification test:** `test_governance_audit.py::test_evidence_content_never_reaches_the_logs`.
+- **Status:** Mitigated and tested for database errors.
+
+### T35. Governance check failure
+- **Protected asset:** A1, A2.
+- **Attacker capability:** A fault, or crafted stored data.
+- **Attack path:** Make the governance check raise so that a request falls through.
+- **Existing mitigation:** Any exception in the check denies in `enforce` with `GOVERNANCE_EVALUATION_ERROR`; in `observe` it is recorded, except that a retired or blocked asset is still denied. A database failure aborts the transaction (503) in both modes.
+- **Residual risk:** In `observe`, an evaluation error on an asset that is not blocked does not stop it, by design (spec 11.2).
+- **Verification test:** `test_governance_gateway.py::test_check_failure_denies_in_enforce`, `test_governance_gateway.py::test_check_failure_does_not_block_in_observe`, `test_governance_gateway.py::test_database_failure_in_the_check_returns_503`, `test_governance_audit.py::test_an_evaluation_error_never_lets_a_blocked_asset_through_in_observe`.
+- **Status:** Mitigated and tested.
+
+## Governance known limits (spec section 17 and the build)
+
+Stated here so they are not left implicit. The boundary view is in `SECURITY_BOUNDARIES.md`.
+
+- **Assessments trust declared inputs.** Only tool access is observed, from the agents' grants. A false profile gives a wrong risk level. Review and verified evidence reduce this; they do not remove it.
+- **`observe` does not stop unapproved assets.** Until a tenant switches to `enforce`, only decisions a person made are enforced.
+- **Governance covers only gateway operations**, like everything else in AEGIS.
+- **Asset-level, not agent-level.** All agents of an asset share its status.
+- **Two admins can collude**, and a stolen admin session can grant the role to another account it controls. Both are audited, not prevented.
+- **ADV4 and ADV5 limits carry over** (T11, T15). Read paths do not re-anchor every governance row to its audit event: votes, review status, withdrawals, and evidence verifications are trusted as stored once written.
+- **Default weights are judgment**, not calibrated against real outcomes.
+- **External documents over 16,000 bytes can only be attested**, because inline text is capped and AEGIS stores no files.
+- **A verification by a reviewer whose grant is later revoked still counts.** The remedy is a `REJECTED` verification by another reviewer.
+- **An expired but unprocessed approval is handled by the gateway**, which compares expiry with its own clock; the worker only aligns the status.
+- **The review date also triggers reassessment.** When `next_review_at` passes, the worker records `REQUIRE_REASSESSMENT`, which can turn a pass into a hold in `enforce`, as a human reassessment would.
+- **Most policy controls are descriptive.** Apart from `minimum_approvers`, `self_approval`, `owner_approval`, and the fields that produce findings, a control is frozen on the review and shown, not enforced (REMEDIATION_PLAN risk 19).
+- **The NIST AI RMF library is partial** (19 of 72 subcategories) **and ISO/IEC 42001 is not loaded.** ISO can reach existing tenants only through a new migration. AEGIS claims compliance with neither.
+- **A mode switch is not serialized** against in-flight evaluations; one action may use the old mode.
+- **The dashboard has no controls for adding evidence, suspending, revoking, retiring, or requesting reassessment.** These are API-only (REMEDIATION_PLAN risk 20).
+
 ## Status
 
 | Threat | Status |
@@ -281,6 +390,10 @@ at the end.
 | T21, T23, T24, T26 | Implemented for the Phase 2 scope |
 | T22 | Partially implemented: thresholds can be evaded, and the limiter is per process |
 | T25 | Implemented, but tested only with fake and mocked providers |
+| T27, T28, T29, T32, T33, T35 | Mitigated and tested (Phase 3). T28 accepts collusion between two admins |
+| T30 | Mitigated and tested, except bounding approval dates by a policy's interval, which is open |
+| T31 | Mitigated, not fully tested: frozen findings, citations of unverified evidence, and unanchored read paths remain |
+| T34 | Mitigated and tested for database errors (found and fixed in the Task 21 audit) |
 
 ## Known gaps, in priority order
 
@@ -299,3 +412,6 @@ The full plan is in `REMEDIATION_PLAN.md`.
 8. No operator workflow for executions stuck in `STARTED` after a crash (`DECISIONS.md` D-007).
 9. The body-size limit trusts `Content-Length`. Deployments should also enforce a limit at the
    reverse proxy.
+10. Governance: approval dates are not bounded by a policy's reassessment interval (T30), and the
+    dashboard cannot suspend an asset, so the emergency stop is API-only (REMEDIATION_PLAN risks 19
+    and 20).

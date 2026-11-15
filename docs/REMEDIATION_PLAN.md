@@ -1,6 +1,7 @@
 # Remediation Plan for Known Security Risks
 
-Phase 2 did **not** solve these risks, apart from the partial mitigations stated below. Each entry
+Phase 2 did **not** solve these risks, apart from the partial mitigations stated below. Phase 3 (the
+Governance Engine) added risks 19 to 30, from its final security audit (Task 21) and its build. Each entry
 says where it stands and what closing it would take. They are ordered by how directly they can hurt
 a real deployment.
 
@@ -12,10 +13,10 @@ a real deployment.
 | 2 | Password guessing has no rate limit | **Open** for login attempts. Failure *recording* is now limited, which protects the audit chain only | High |
 | 3 | Arbitrary SQL under the runtime role can switch tenant | **Open.** A test records it | High |
 | 4 | Someone with full database control can rewrite the whole audit chain | **Open.** A test records it. Investigations now state the gap | High |
-| 5 | Any reviewer can approve any action, and one admin can activate a policy | **Open** | Medium |
+| 5 | Any reviewer can approve any action, and one admin can activate a policy | **Partly addressed in Phase 3** for governance only: asset owners are user references, and governance approvals refuse the submitter and owners unless a policy permits it. Runtime action approvals and runtime policy activation are unchanged | Medium |
 | 6 | Tool results, including sensitive content, are retained in `executions.result` | **Open.** Events, timelines, and evidence never expose them | Medium |
 | 7 | A crash can leave an execution in `STARTED` | **Open.** Investigations now report it as "no recorded outcome" instead of guessing | Medium |
-| 8 | Docker Compose has never been run | **Open.** CI has now run and passed on GitHub | Low |
+| 8 | Docker Compose has never been run | **Open.** CI has now run and passed on GitHub. Still unrun after Phase 3 | Low |
 | 9 | Correlation thresholds are public, so an attacker can stay just below them | **New, accepted for now** | Medium |
 | 10 | Anyone who knows a tenant ID can trigger authentication failure events and one incident | **New, limited.** At most one active incident per scope, and recording is limited per process | Medium |
 | 11 | The real LLM provider has never been called | **New.** Tested only against a mock transport | Low |
@@ -26,6 +27,18 @@ a real deployment.
 | 16 | `not_visible_references` also fires on honest mistakes, such as stale links, at `high` severity. The browser tests triggered it | **Open.** Investigations state it cannot confirm a cross-tenant attempt | Medium |
 | 17 | Evidence and timelines verify each event per request, and neither has been load tested | **Open** | Low |
 | 18 | `pytest` 8.4.2 has a published advisory (PYSEC-2026-1845, fixed in 9.0.3). It is a development dependency and is not deployed | **Open** | Low |
+| 19 | Governance policy controls other than `minimum_approvers`, `self_approval`, `owner_approval` and the finding-producing fields are descriptive. In particular `reassessment_interval_days` does not bound an approval's `next_review_at` or `valid_until` (`approvals.py` `_require_dates`), and `required_evaluations`, `required_documentation` and `incident_reporting` produce no finding (`engine/policies.py` `_findings`) | **Open.** Found in the Task 21 audit. Frozen on the review and shown to the reviewer | Medium |
+| 20 | The dashboard has no controls for adding evidence, suspending, revoking, retiring, or requesting reassessment (spec 7.4, 14). The emergency stop is API-only | **Open.** Carried from Task 20 | Medium |
+| 21 | Findings are frozen at submission, so evidence rejected later does not add a finding to an open review, and an approval may cite evidence whatever its current verification status | **Accepted for now.** The approval page shows each item's current status | Low |
+| 22 | Governance read paths trust stored rows once written: counted votes, review status and withdrawals, and evidence verifications are not re-anchored to their audit events when read. Someone with database control can change them (T11, T15) | **Open.** Decisions, reviews' frozen values, and evidence submissions are anchored | Medium |
+| 23 | The 500 handler logs exception messages. Database parameters are now hidden (fixed in Task 21), but an exception raised in a service whose message echoes a value would still be logged. A NUL byte in text gives 500 rather than 422 | **Partly fixed** | Low |
+| 24 | `_is_seeded` compares control counts, so once a seeded framework gains controls every compliance read takes the per-tenant advisory lock | **Open.** Performance only | Low |
+| 25 | A concurrent evidence rejection caught by the control-assessment trigger returns 409 `ALREADY_EXISTS` instead of `EVIDENCE_REQUIRED` | **Open.** Fails closed with a misleading code | Low |
+| 26 | Unpaged reads: the preflight lists every asset; the risk page reads methodologies and history with `limit=100`; the control detail page loads every control, evidence item and asset | **Open** | Low |
+| 27 | Review worker: more than 500 persistently failing assets can hide later due ones, and `stop()` waits 10 seconds, which a long pass can outlast. Expiry does not depend on the worker | **Open** | Low |
+| 28 | The dashboard's `submittedValues` copies every submitted form field back into client state after a refusal. Harmless today; a future sensitive field would be echoed to the browser that sent it | **Open** | Low |
+| 29 | The NIST AI RMF library is partial (19 of 72 subcategories) and ISO/IEC 42001 is not loaded. ISO can reach existing tenants only through a new seeding migration | **Accepted.** Stated in the product | Low |
+| 30 | Two admins can grant each other `governance_reviewer` and collude; a stolen admin session can grant it to another account | **Accepted.** Audited, not prevented | Medium |
 
 ## Proposed order of work
 
@@ -71,6 +84,26 @@ workflow to review and resolve executions stuck in `STARTED`.
 Run Compose on a machine with Docker and add it to CI. Run the Claude provider once against the real API
 with synthetic evidence. Add a nonce-based content security policy. Tune the `not_visible_references`
 severity using real data, load test investigations, and upgrade `pytest`.
+
+### Step 8: Governance follow-ups (risks 19 to 28)
+
+In this order. First, add dashboard controls for suspend, revoke, reassess, retire, and adding
+evidence, so the emergency stop does not need the API (risk 20). Second, decide with the product
+owner whether `reassessment_interval_days` should refuse an approval whose dates exceed it, and
+make the other descriptive controls produce findings (risk 19). Third, anchor votes, review status,
+and verifications to their audit events on read (risk 22). Then the Low items (21, 23 to 28).
+
+## What the Phase 3 audit fixed (Task 21)
+
+- Database errors were logged with their bound parameters, so a refused insert could write inline
+  evidence text to the logs. Fixed with `hide_parameters=True`
+  (`test_governance_audit.py::test_evidence_content_never_reaches_the_logs`).
+- In `observe`, an exception in the governance check let a retired or hard-blocked asset act. Rows
+  1 and 2 are now read from the state row alone
+  (`test_an_evaluation_error_never_lets_a_blocked_asset_through_in_observe`).
+- Reviews were listed by `submitted_at`, so the asset page could show a withdrawn review as the
+  latest if the clock stepped back. They are now ordered by the audit sequence of their `SUBMIT`
+  (`test_latest_review_is_the_latest_by_audit_sequence_not_by_clock`).
 
 ## What Phase 2 changed for these risks
 

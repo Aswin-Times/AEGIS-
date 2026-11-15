@@ -63,6 +63,18 @@ tenants 1--* users
 | `investigation_findings` | `run_id`, `kind`, `source`, `statement`, `position` | Append-only. `CHECK ((source = 'llm') = (kind = 'ai_hypothesis'))`. A deferred constraint trigger requires evidence for facts, rule results, and hypotheses |
 | `finding_evidence` | One nullable foreign key per record type | `CHECK (num_nonnulls(...) = 1)`. All composite, so another tenant's record cannot be referenced |
 
+## Phase 3 summary
+
+Migrations `0005` to `0014` add 22 tenant tables, all with `tenant_id NOT NULL`, `UNIQUE (tenant_id,
+id)` (or a tenant-leading primary key), composite tenant foreign keys, `ENABLE` and `FORCE` row-level
+security, and the `tenant_isolation` policy. Four of them can be updated in named columns
+(`governance_settings`, `governance_role_grants`, `asset_governance_state`, `governance_reviews`);
+the other 18 are append-only, which
+`test_governance_audit.py::test_every_governance_history_table_rejects_update_delete_and_truncate`
+checks against the live catalog. Migration `0010` changes the state guard and adds no table;
+`0014` adds one function and one owner policy. The runtime role's grants are compared with the
+catalog by `test_tenant_isolation_db.py`.
+
 ## Phase 3 tables (governance, migration `0005`)
 
 | Table | Key columns | Notes |
@@ -167,7 +179,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT, INSERT`, `UPDATE (status, decided_by, decided_at, comment)` | `approvals` |
 | `SELECT, INSERT`, `UPDATE (status, result, finished_at)` | `executions` |
 | `SELECT, INSERT, DELETE` | `agent_tool_grants`, `agent_resource_grants` |
-| `EXECUTE` | `aegis_resolve_tenant(text)`, `aegis_tenants_with_due_governance_reviews(timestamptz)` |
+| `EXECUTE` | `aegis_resolve_tenant(text)`, `aegis_tenants_with_pending_events()`, `aegis_tenants_with_due_governance_reviews(timestamptz)` |
 
 Updates are column-level, so the runtime role cannot change a request, an approval's binding,
 or an agent's owner. A test compares this table with the live catalog. Tenants and users can
@@ -198,7 +210,8 @@ rows. A test fails if any other such function appears.
 
 Login and failed-login auditing need a tenant ID before a tenant context exists. This
 `SECURITY DEFINER` function, with a fixed `search_path`, returns only the ID for an exact
-slug. It is the sole deliberate RLS exception. It allows slug probing; login returns the
+slug. It was the first deliberate RLS exception; the two functions above are the others, and
+`test_only_the_id_lookups_are_security_definer` fails if a fourth appears. It allows slug probing; login returns the
 same error whether or not the tenant exists, and the function has no HTTP exposure of its
 own.
 
