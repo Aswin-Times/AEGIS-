@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { API, newGovernanceTenant, type Tenant } from "./helpers";
 
 // The governance workflow end to end (spec section 1, Success), in a synthetic tenant of its own so
-// the demo tenant is left as it was. Registering the agent and adding evidence are API-only, as in
-// the product; owners, purpose, assessment, submission, review, and the decision are made in the
-// browser; the gateway is called with the agent's real key; and the history is read on the page.
+// the demo tenant is left as it was. Owners, purpose, assessment, submission, review, and the
+// decision are made in the browser; the gateway is called with the agent's real key; and the
+// history is read on the page. Registering the agent is API-only in the product. Adding evidence
+// and suspending go through the API because the dashboard has no control for them yet.
 // People: admin submits, reviewer (granted governance_reviewer by admin) decides, admin2 and
 // reviewer2 own the asset and hold no grant, and viewer reads the history.
 
@@ -205,7 +206,7 @@ test("an agent goes from registration to an enforced, suspended, and traceable d
     await page.reload();
     await page.getByLabel("Submission reason").fill("Ready for review: synthetic workflow");
     await page.getByRole("button", { name: "Submit for review" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Submitted for review" })).toBeVisible();
+    await expect(region(page, "Submission")).toContainText("Submitted for review on");
     type Review = {
       id: string;
       status: string;
@@ -260,10 +261,41 @@ test("an agent goes from registration to an enforced, suspended, and traceable d
       "CONDITIONALLY_APPROVED",
     );
 
-    // 10. Enforce mode, through the real gateway with the agent's key.
+    // 10. Enforce mode, through the real gateway with the agent's key. A second agent, on an asset
+    // never approved, shows what the mode itself changes: allowed in observe, denied in enforce.
+    const unapprovedAsset = await post<{ id: string }>("/assets", {
+      name: `${name}-unapproved`,
+      owner: "Synthetic E2E",
+      risk_classification: "low",
+      intended_use: "Synthetic workflow e2e, never approved",
+      is_synthetic: true,
+    });
+    const unapproved = await post<{ id: string }>("/agents", {
+      asset_id: unapprovedAsset.id,
+      name: `${name}-unapproved-agent`,
+      owner: "Synthetic E2E",
+    });
+    await post(`/agents/${unapproved.id}/tool-grants`, { tool: "calculate" });
+    const unapprovedKey = (await post<{ key: string }>(`/agents/${unapproved.id}/credentials`, {})).key;
+    const unapprovedHeaders = { Authorization: `Bearer ${unapprovedKey}`, "Content-Type": "application/json" };
+    const actUnapproved = async () => {
+      const response = await call("POST", "/gateway/actions", "agent", {
+        idempotency_key: randomUUID(),
+        tool: "calculate",
+        resource_id: null,
+        params: { operator: "add", a: 1, b: 1 },
+      }, unapprovedHeaders);
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json()) as Action;
+    };
     expect((await get<{ enforcement_mode: string }>("/governance/enforcement")).enforcement_mode).toBe("observe");
+    const observed = await actUnapproved();
+    expect([observed.outcome, observed.execution?.status]).toEqual(["ALLOW", "SUCCEEDED"]);
     await post("/governance/enforcement", { mode: "enforce", reason: "Synthetic workflow e2e" });
     try {
+      const enforced = await actUnapproved();
+      expect([enforced.outcome, enforced.reason_code]).toEqual(["DENY", "GOVERNANCE_NOT_APPROVED"]);
+      expect(enforced.execution).toBeNull();
       const allowed = await act("calculate", null, { operator: "add", a: 2, b: 3 });
       expect([allowed.outcome, allowed.execution?.status]).toEqual(["ALLOW", "SUCCEEDED"]);
       expect(allowed.execution?.result).toEqual({ value: 5 });
@@ -277,7 +309,11 @@ test("an agent goes from registration to an enforced, suspended, and traceable d
       expect([blocked.outcome, blocked.reason_code]).toEqual(["DENY", "GOVERNANCE_BLOCKED"]);
       expect(blocked.execution).toBeNull();
     } finally {
-      await post("/governance/enforcement", { mode: "observe", reason: "Restore after workflow e2e" });
+      // Back to observe, as found; a failure above may have happened before the switch.
+      const now = await get<{ enforcement_mode: string }>("/governance/enforcement");
+      if (now.enforcement_mode !== "observe") {
+        await post("/governance/enforcement", { mode: "observe", reason: "Restore after workflow e2e" });
+      }
     }
 
     // 12. The history in the dashboard, in audit order, matching the API.

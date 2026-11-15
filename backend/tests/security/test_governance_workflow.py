@@ -316,6 +316,14 @@ def test_complete_governance_workflow(world, tenant, attacker_sql):
     assert {item["control"] for item in frozen["required_controls"]} == {
         "required_documentation", "required_evidence_categories", "required_human_oversight",
         "required_owners"}
+    # The values frozen are the policy's, each tied to the version that asked for it.
+    assert {item["control"]: (item["policy_version_id"], item["value"])
+            for item in frozen["required_controls"]} == {
+        "required_documentation": (policy_version_id, ["Synthetic operating runbook"]),
+        "required_evidence_categories": (policy_version_id, ["security_evaluation"]),
+        "required_human_oversight": (policy_version_id, ["in_the_loop"]),
+        "required_owners": (policy_version_id, ["business", "technical"]),
+    }
     assert (frozen["self_approval_permitted"], frozen["owner_approval_permitted"]) == (False, False)
     assert review["required_approvers"] == 1
     # Owners are set and the evidence is verified, so the only finding is the oversight mode.
