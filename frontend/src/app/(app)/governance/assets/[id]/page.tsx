@@ -32,8 +32,13 @@ import { AssessForm } from "./assess-form";
 import { AssetSummary, staleNote } from "./asset-summary";
 import { ProfileForm } from "./profile-form";
 import { ProfileSummary } from "./profile-summary";
+import { SubmitForm } from "./submit-form";
 
 export const metadata = { title: "AI asset | AEGIS" };
+
+// Statuses from which an administrator can submit (spec 7.1), and open review statuses.
+const SUBMITTABLE = ["ASSESSMENT_REQUIRED", "REASSESSMENT_REQUIRED"];
+const OPEN_REVIEW = ["OPEN", "INFO_REQUESTED"];
 
 const LIBRARY_STATUS: Record<string, string> = {
   NOT_LOADED: "Not loaded",
@@ -129,6 +134,10 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
     controls, linked, risk } = data;
 
   const review = reviews.items[0];
+  const openReview = review && OPEN_REVIEW.includes(review.status) ? review : null;
+  // A review waiting for information is answered by submitting again, which replaces it.
+  const canSubmit =
+    SUBMITTABLE.includes(asset.governance_status ?? "") || openReview?.status === "INFO_REQUESTED";
   const versions = new Map(
     policies.items.flatMap((policy) =>
       policy.versions.map((version) => [version.id, { policy, version }] as const),
@@ -165,6 +174,32 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
           <ProfileSummary asset={asset} />
         )}
       </Section>
+
+      {admin && (
+        <Section title="Submission">
+          {openReview && (
+            <p role="status" className="border-b border-line px-3 py-2 text-sm">
+              Submitted for review on {formatTime(openReview.submitted_at)}.{" "}
+              {openReview.status === "INFO_REQUESTED"
+                ? "The reviewer has asked for information; submitting again replaces the review."
+                : "The review is awaiting a decision."}{" "}
+              <Link href={`/governance/approvals/${openReview.id}`} className="underline">
+                Open the review
+              </Link>
+            </p>
+          )}
+          {canSubmit ? (
+            <SubmitForm assetId={asset.id} />
+          ) : (
+            !openReview && (
+              <p className="px-3 py-2 text-sm text-muted">
+                An asset can be submitted once a complete assessment of its current profile exists,
+                while it is in Assessment required or Reassessment required.
+              </p>
+            )
+          )}
+        </Section>
+      )}
 
       <Section title="Policies">
         {!review ? (

@@ -36,6 +36,7 @@ async function newAsset() {
 }
 
 type Detail = {
+  governance_status: string | null;
   profile: { version: number; profile: Record<string, unknown> } | null;
 };
 
@@ -44,6 +45,18 @@ async function detailOf(id: string): Promise<Detail> {
   expect(response.status).toBe(200);
   return response.json();
 }
+
+const LOW_PROFILE = {
+  asset_type: "ai_application",
+  data_categories: ["public"],
+  external_exposure: "none",
+  autonomy_level: "advisory",
+  declared_tool_access: [],
+  human_oversight: "in_the_loop",
+  impact_level: "negligible",
+  deployment_environment: "development",
+  third_party_reliance: "none",
+};
 
 test("a second profile save from the same page keeps the choices saved by the first", async ({
   page,
@@ -72,4 +85,47 @@ test("a second profile save from the same page keeps the choices saved by the fi
   const second = (await detailOf(asset.id)).profile!;
   expect(second.version).toBe(2);
   expect(second.profile).toEqual({ ...first, business_purpose: "Synthetic second purpose" });
+});
+
+test("an administrator submits an assessed asset for review from its page", async ({ page }) => {
+  const asset = await newAsset();
+  expect((await call("POST", `/governance/assets/${asset.id}/profile`, admin, LOW_PROFILE)).status).toBe(201);
+
+  await tenant.signIn(page, "admin");
+  await page.goto(`/governance/assets/${asset.id}`);
+  // A draft has no assessment of its current profile yet, so nothing can be submitted.
+  await expect(page.getByRole("button", { name: "Submit for review" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Run risk assessment" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Assessment recorded" })).toBeVisible();
+
+  // A reason is required, and nothing is sent without one.
+  await page.getByRole("button", { name: "Submit for review" }).click();
+  await expect(page.getByLabel("Submission reason")).toHaveAttribute("aria-invalid", "true");
+  expect((await detailOf(asset.id)).governance_status).toBe("ASSESSMENT_REQUIRED");
+
+  await page.getByLabel("Submission reason").fill("Synthetic submission from the asset page");
+  await page.getByRole("button", { name: "Submit for review" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Submitted for review" })).toBeVisible();
+  expect((await detailOf(asset.id)).governance_status).toBe("UNDER_REVIEW");
+  const reviews = await (await call("GET", `/governance/approvals?asset_id=${asset.id}`, admin)).json();
+  expect(reviews.items).toHaveLength(1);
+  expect(reviews.items[0].status).toBe("OPEN");
+  const history = await (await call("GET", `/governance/assets/${asset.id}/history`, admin)).json();
+  const submit = history.items.find((item: { kind: string | null }) => item.kind === "SUBMIT");
+  expect(submit.decision.reason).toBe("Synthetic submission from the asset page");
+  // The page links to the review, and offers no second submission.
+  await expect(page.getByRole("link", { name: "Open the review" })).toHaveAttribute(
+    "href",
+    `/governance/approvals/${reviews.items[0].id}`,
+  );
+  await expect(page.getByRole("button", { name: "Submit for review" })).toHaveCount(0);
+
+  // Only administrators submit: a reviewer sees no control, and the API refuses in any case.
+  await tenant.signIn(page, "reviewer");
+  await page.goto(`/governance/assets/${asset.id}`);
+  await expect(page.getByLabel("Submission reason")).toHaveCount(0);
+  const refused = await call("POST", `/governance/assets/${asset.id}/submit`, await tenant.headers("reviewer"), {
+    reason: "Synthetic refused submission",
+  });
+  expect(refused.status).toBe(403);
 });

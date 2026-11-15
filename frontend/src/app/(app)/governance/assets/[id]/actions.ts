@@ -161,3 +161,28 @@ export async function runAssessment(
         : "Assessment recorded. It is incomplete, so it has no risk level.",
   };
 }
+
+export async function submitForReview(
+  _: ProfileFormState,
+  form: FormData,
+): Promise<ProfileFormState> {
+  const assetId = text(form, "asset_id");
+  if (!UUID.test(assetId)) return { error: "That asset was not found." };
+  const reason = text(form, "reason");
+  if (!reason || reason.length > TEXT_MAX) {
+    return {
+      error: "Some fields need attention.",
+      fieldErrors: { reason: `Give a reason of at most ${TEXT_MAX} characters.` },
+      values: { reason },
+    };
+  }
+  try {
+    await api(`/governance/assets/${assetId}/submit`, { method: "POST", body: { reason } });
+  } catch (error) {
+    return { ...refused(error, "submit an asset for review"), values: { reason } };
+  }
+  revalidatePath(`/governance/assets/${assetId}`, "layout");
+  revalidatePath("/governance/approvals");
+  revalidatePath("/governance/assets");
+  return { saved: "Submitted for review. The required controls are now frozen on the review." };
+}
