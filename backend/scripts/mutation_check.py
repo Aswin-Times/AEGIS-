@@ -49,6 +49,7 @@ EVIDENCE_MIGRATION = "migrations/versions/0011_governance_evidence.py"
 REVIEWS = "src/aegis/governance/reviews.py"
 REVIEWS_MIGRATION = "migrations/versions/0014_governance_reviews.py"
 REVIEW_TESTS = f"{SEC}/test_governance_reviews.py"
+AUDIT_TESTS = f"{SEC}/test_governance_audit.py"
 LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
@@ -643,6 +644,11 @@ MUTATIONS = [
     Mutation("Governance: due-review lookup executable by PUBLIC", REVIEWS_MIGRATION,
              '"REVOKE ALL ON FUNCTION aegis_tenants_with_due_governance_reviews(timestamptz) '
              'FROM PUBLIC",', '"SELECT 1",', REVIEW_TESTS),
+    Mutation("Governance: check failure lets a blocked asset through in observe", GATEWAY_CHECK,
+             "return _person_block(state) or (evaluation_error(mode), None)",
+             "return evaluation_error(mode), None", AUDIT_TESTS),
+    Mutation("Database errors log their bound parameters", "src/aegis/db/session.py",
+             "hide_parameters=True,", "hide_parameters=False,", AUDIT_TESTS),
 ]
 
 

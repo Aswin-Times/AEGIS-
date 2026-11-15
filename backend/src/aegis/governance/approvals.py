@@ -833,10 +833,20 @@ def list_reviews(session: Session, *, status: str | None, asset_id: UUID | None,
         conditions.append(GovernanceReview.status == status)
     if asset_id is not None:
         conditions.append(GovernanceReview.asset_id == asset_id)
+    # Newest first by the audit sequence of the SUBMIT that opened each review, since
+    # timestamps can tie or step back.
+    submitted_seq = (
+        select(func.max(AuditEvent.seq))
+        .join(GovernanceDecision, GovernanceDecision.audit_event_id == AuditEvent.id)
+        .where(GovernanceDecision.review_id == GovernanceReview.id,
+               GovernanceDecision.kind == DecisionKind.SUBMIT)
+        .correlate(GovernanceReview)
+        .scalar_subquery()
+    )
     reviews = session.execute(
         select(GovernanceReview)
         .where(*conditions)
-        .order_by(GovernanceReview.submitted_at.desc(), GovernanceReview.id)
+        .order_by(submitted_seq.desc().nulls_last(), GovernanceReview.id)
         .limit(limit)
         .offset(offset)
     ).scalars().all()

@@ -8,8 +8,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 class Database:
     def __init__(self, url: str, *, pool_size: int = 10, max_overflow: int = 20) -> None:
+        # hide_parameters keeps bound values out of exception text, so a logged database error
+        # never carries request content such as evidence.
         self.engine = create_engine(
-            url, pool_pre_ping=True, pool_size=pool_size, max_overflow=max_overflow
+            url, pool_pre_ping=True, pool_size=pool_size, max_overflow=max_overflow,
+            hide_parameters=True,
         )
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
 

@@ -1,7 +1,8 @@
 """Governance facts for the Security Gateway, read inside the gateway's own transaction (spec 11).
 
 The gateway holds a share lock on the agent row before this runs. Suspend, revoke, and reject take
-every agent row of the asset FOR UPDATE before they touch the state row (spec 11.4), so this read
+every agent row of the asset FOR NO KEY UPDATE, which conflicts with that share lock, before they
+touch the state row (spec 11.4), so this read
 sees either the state from before such a change or the committed change, even for an asset with no
 state row yet. The read takes no lock of its own, so a lifecycle change never waits on it.
 """
@@ -171,6 +172,20 @@ def load_facts(session: Session, agent_id: UUID,
     return facts, asset_id
 
 
+def _person_block(state: AssetGovernanceState | None) -> tuple[GovernanceCheck, UUID | None] | None:
+    """Rows 1 and 2 of spec 11.2, read from the state row alone, so they hold even when the rest
+    of the check fails: a person's decision applies in both modes (spec 11.6)."""
+    if state is None:
+        return None
+    if state.status == GovernanceStatus.RETIRED.value:
+        return (GovernanceCheck(Verdict.DENY, "GOVERNANCE_RETIRED"),
+                state.hard_block_decision_id or state.current_decision_id)
+    if is_hard_blocked(state.status, state.hard_block_decision_id):
+        return (GovernanceCheck(Verdict.DENY, "GOVERNANCE_BLOCKED"),
+                state.hard_block_decision_id or state.current_decision_id)
+    return None
+
+
 def _checked(session: Session, mode: str, state: AssetGovernanceState | None,
              action: ActionContext, now: datetime) -> tuple[GovernanceCheck, UUID | None]:
     try:
@@ -181,7 +196,7 @@ def _checked(session: Session, mode: str, state: AssetGovernanceState | None,
         raise
     except Exception:
         logger.exception("governance check failed")
-        return evaluation_error(mode), None
+        return _person_block(state) or (evaluation_error(mode), None)
 
 
 def check_state(session: Session, state: AssetGovernanceState | None, mode: str,
