@@ -649,6 +649,9 @@ MUTATIONS = [
              "return evaluation_error(mode), None", AUDIT_TESTS),
     Mutation("Database errors log their bound parameters", "src/aegis/db/session.py",
              "hide_parameters=True,", "hide_parameters=False,", AUDIT_TESTS),
+    Mutation("Provisioning errors carry their bound parameters", "src/aegis/provisioning.py",
+             "role: str) -> UUID:\n    engine = create_engine(owner_url, hide_parameters=True)",
+             "role: str) -> UUID:\n    engine = create_engine(owner_url)", AUDIT_TESTS),
 ]
 
 

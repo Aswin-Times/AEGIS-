@@ -6,10 +6,12 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 import aegis.governance.gateway_check as gateway_check
 from aegis.logging_config import JsonFormatter
-from support import APPROVALS, assessed_asset, reviewers, submitted
+from aegis.provisioning import create_user
+from support import APPROVALS, PASSWORD, assessed_asset, reviewers, submitted
 
 PARAMS = {"operator": "add", "a": 1, "b": 2}
 MARKER = "SYNTHETIC-EVIDENCE-MARKER-7f3a"
@@ -84,14 +86,14 @@ def test_evidence_content_never_reaches_the_logs(world, tenant):
                 "asset_id": asset_id, "category": "model_evaluation",
                 "description": description, "source": source,
             })
-            assert response.status_code == 500
+            # Today this is a 500 (REMEDIATION_PLAN risk 23). A future 422 also passes: what
+            # matters here is that the write is refused and the value is not logged.
+            assert not 200 <= response.status_code < 300
             assert MARKER not in response.text
     finally:
         logger.removeHandler(handler)
 
-    logged = stream.getvalue()
-    assert "unhandled error" in logged
-    assert MARKER not in logged
+    assert MARKER not in stream.getvalue()
 
 
 def test_latest_review_is_the_latest_by_audit_sequence_not_by_clock(world, tenant):
@@ -140,3 +142,45 @@ def test_an_evaluation_error_never_lets_a_blocked_asset_through_in_observe(
     body = response.json()
     assert (body["outcome"], body["reason_code"]) == ("DENY", reason_code)
     assert world.spy.calls == []
+
+
+@pytest.mark.parametrize(("action", "reason_code"), [
+    ("suspend", "GOVERNANCE_BLOCKED"),
+    ("retire", "GOVERNANCE_RETIRED"),
+])
+def test_an_evaluation_error_on_a_blocked_asset_keeps_its_reason_in_enforce(
+        world, tenant, attacker_sql, monkeypatch, action, reason_code):
+    """The fallback names the person's decision in enforce too, and records it in the check row."""
+    tenant.allow_everything()
+    agent = tenant.governed_agent(tools=["calculate"])
+    response = tenant.post(f"/governance/assets/{agent.asset_id}/{action}",
+                           {"reason": "Synthetic lifecycle change."})
+    assert response.status_code == 201, response.text
+    decision_id = response.json()["id"]
+    tenant.set_enforcement("enforce")
+    monkeypatch.setattr(gateway_check, "check", _broken_check)
+
+    response = agent.act("calculate", params=PARAMS)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["outcome"], body["reason_code"]) == ("DENY", reason_code)
+    assert world.spy.calls == []
+    row = attacker_sql.execute(
+        "SELECT mode, verdict, reason_code, governance_decision_id::text "
+        "FROM governance_gateway_checks WHERE request_id = %s", (body["request_id"],),
+    ).fetchone()
+    assert row == ("enforce", "DENY", reason_code, decision_id)
+
+
+def test_provisioning_errors_do_not_carry_their_parameters(urls, new_tenant):
+    """The owner-role engines hide bound values too: a refused user insert must not put the
+    password hash into the exception text that a caller might log."""
+    tenant_id = new_tenant()
+    email = f"synthetic-{uuid4().hex[:8]}@example.test"
+    create_user(urls.owner, tenant_id, email=email, password=PASSWORD, role="viewer")
+
+    with pytest.raises(IntegrityError) as raised:
+        create_user(urls.owner, tenant_id, email=email, password=PASSWORD, role="viewer")
+
+    assert "$argon2" not in str(raised.value)
