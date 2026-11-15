@@ -307,3 +307,11 @@ of the cost if the ruling is wrong.
 61. **Task 20.** the admin-only Submission section on the asset page is kept (backend route is AdminDep, spec 7.5, spec 14 needs a submit control in the dashboard) — cost if wrong: move it.
 62. **Task 20.** the ConfirmAction form-reset bug (Tasks 18-19 code) is fixed in this round, not deferred, because a corrected resubmission could record the opposite verification outcome — cost if wrong: none.
 63. **Task 21.** the two tests appended to tests/security/test_correlation.py in Task 17 (a761aa6) are additions only; no existing assertion changed, so they are within the permitted ways (moving the incident asset_id contract test there) — cost if wrong: move them.
+
+**Note on an existing test helper edited outside the permitted list.** `frontend/e2e/helpers.ts`
+existed before Phase 3 and was changed in it (commits bc4f2c5, 385723a, 9bf7f81). `newRestrictedAgent`
+now finds the seeded demo asset by name, paging through `/assets`, instead of taking the first item:
+the governance seed adds assets, so the demo asset is no longer on the first page. `adminHeaders`
+became an alias of the new `headersFor("admin")`. No assertion changed. This was not ruled during the
+build; it is recorded here so the record of edits to existing tests is complete, beside the Task 16
+ruling on `dashboard.spec.ts` (item 53) and the Task 21 ruling above.

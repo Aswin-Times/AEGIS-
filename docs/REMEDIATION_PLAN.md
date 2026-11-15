@@ -1,8 +1,8 @@
 # Remediation Plan for Known Security Risks
 
 Phase 2 did **not** solve these risks, apart from the partial mitigations stated below. Phase 3 (the
-Governance Engine) added risks 19 to 31, from its final security audit (Task 21) and its build. Each entry
-says where it stands and what closing it would take. They are ordered by how directly they can hurt
+Governance Engine) added risks 19 to 38, from its final security audit (Task 21), the whole-branch
+review, and its build. Each entry says where it stands and what closing it would take. They are ordered by how directly they can hurt
 a real deployment.
 
 ## Risk register
@@ -13,7 +13,7 @@ a real deployment.
 | 2 | Password guessing has no rate limit | **Open** for login attempts. Failure *recording* is now limited, which protects the audit chain only | High |
 | 3 | Arbitrary SQL under the runtime role can switch tenant | **Open.** A test records it | High |
 | 4 | Someone with full database control can rewrite the whole audit chain | **Open.** A test records it. Investigations now state the gap | High |
-| 5 | Any reviewer can approve any action, and one admin can activate a policy | **Partly addressed in Phase 3** for governance only: asset owners are user references, and governance approvals refuse the submitter and owners unless a policy permits it. Runtime action approvals and runtime policy activation are unchanged | Medium |
+| 5 | Any reviewer can approve any action, and one admin can activate a policy | **Partly addressed in Phase 3** for governance only: asset owners are user references, and governance approvals refuse the submitter and owners unless a policy permits it. Runtime action approvals and runtime policy activation are unchanged. That includes a governance hold (`GOVERNANCE_CONDITION_HOLD`, `GOVERNANCE_REASSESSMENT_REQUIRED`): it becomes a runtime approval that any admin or reviewer can release (`routes_runtime.py` uses `ReviewerDep`), so the asset's owner or the review's submitter can release it with no `governance_reviewer` grant and no self-approval refusal. This is by design (spec 11.2). Proposed fix: refuse a runtime approval of a `GOVERNANCE_*` hold by the asset's submitter or owners | Medium |
 | 6 | Tool results, including sensitive content, are retained in `executions.result` | **Open.** Events, timelines, and evidence never expose them | Medium |
 | 7 | A crash can leave an execution in `STARTED` | **Open.** Investigations now report it as "no recorded outcome" instead of guessing | Medium |
 | 8 | Docker Compose has never been run | **Open.** CI has now run and passed on GitHub. Still unrun after Phase 3 | Low |
@@ -30,7 +30,7 @@ a real deployment.
 | 19 | Governance policy controls other than `minimum_approvers`, `self_approval`, `owner_approval` and the finding-producing fields are descriptive. In particular `reassessment_interval_days` does not bound an approval's `next_review_at` or `valid_until` (`approvals.py` `_require_dates`), and `required_evaluations`, `required_documentation` and `incident_reporting` produce no finding (`engine/policies.py` `_findings`) | **Open.** Found in the Task 21 audit. Frozen on the review and shown to the reviewer | Medium |
 | 20 | The dashboard has no controls for adding evidence, suspending, revoking, retiring, or requesting reassessment (spec 7.4, 14). The emergency stop is API-only | **Open.** Carried from Task 20 | Medium |
 | 21 | Findings are frozen at submission, so evidence rejected later does not add a finding to an open review, and an approval may cite evidence whatever its current verification status | **Accepted for now.** The approval page shows each item's current status | Low |
-| 22 | Governance rows are not anchored to their audit events on read. Only two reads compare a row with its own audit event: a review's frozen values are compared with its `SUBMIT` decision's audit payload when a decision is made (`approvals.py` `verify_review_anchored`), and an evidence row is compared with its `evidence_submitted` event when it is verified. Other rows are checked at most against a hash stored in the same row, which someone who can write the row can recompute: policy and methodology versions, review `frozen_hash`, decision `conditions_hash` (the gateway reads conditions from the decision row alone), and profile hashes at submission and decision. Nothing compares decision rows, counted votes, review status and withdrawals, evidence verifications, control assessments, or policy and methodology events with their audit events; `run_assessment` reads the current profile without checking its hash; and the `content_hash`, `input_hash`, and `result_hash` values written into audit payloads are never read back. Someone with database control can therefore change these rows undetected (T11, T15) | **Open** | Medium |
+| 22 | Governance rows are not anchored to their audit events on read. Two kinds of row are compared with their own audit event on read. A review's frozen values are compared with its `SUBMIT` decision's audit payload (`approvals.py` `verify_review_anchored`) when a decision is made, on `GET /approvals/{id}`, and when an `INFO_REQUESTED` review is replaced by resubmission; and an evidence row is compared with its `evidence_submitted` event when it is verified. The review's `assigned_reviewer`, which the runtime role can update, is not part of that comparison and is never checked against the `reviewer_id` in the `ASSIGN_REVIEWER` payload, so a changed assignee goes undetected. Other rows are checked at most against a hash stored in the same row, which someone who can write the row can recompute: policy and methodology versions, review `frozen_hash`, decision `conditions_hash` (the gateway reads conditions from the decision row alone), and profile hashes at submission and decision. Nothing compares decision rows, counted votes, review status and withdrawals, evidence verifications, control assessments, or policy and methodology events with their audit events; `run_assessment` reads the current profile without checking its hash; and the `content_hash`, `input_hash`, and `result_hash` values written into audit payloads are never read back. Someone with database control can therefore change these rows undetected (T11, T15) | **Open** | Medium |
 | 23 | The 500 handler logs exception messages. Database parameters are now hidden (fixed in Task 21), but an exception raised in a service whose message echoes a value would still be logged. A NUL byte in text gives 500 rather than 422 | **Partly fixed** | Low |
 | 24 | `_is_seeded` compares control counts, so once a seeded framework gains controls every compliance read takes the per-tenant advisory lock | **Open.** Performance only | Low |
 | 25 | A concurrent evidence rejection caught by the control-assessment trigger returns 409 `ALREADY_EXISTS` instead of `EVIDENCE_REQUIRED` | **Open.** Fails closed with a misleading code | Low |
@@ -40,6 +40,13 @@ a real deployment.
 | 29 | The NIST AI RMF library is partial (19 of 72 subcategories) and ISO/IEC 42001 is not loaded. ISO can reach existing tenants only through a new seeding migration | **Accepted.** Stated in the product | Low |
 | 30 | Two admins can grant each other `governance_reviewer` and collude; a stolen admin session can grant it to another account | **Accepted.** Audited, not prevented | Medium |
 | 31 | A governance hold at the re-evaluation of an action a person already approved does not block it, but the re-evaluation decision is recorded as `REQUIRE_APPROVAL` beside a `SUCCEEDED` execution, which reads oddly in the audit record | **Open.** Audit-record clarity only; enforcement is as designed (spec 11.2) | Low |
+| 32 | Methodology rules are enforced by the service only. There is no trigger like `aegis_policy_event_guard` for `risk_methodology_events`, and `active_methodology` (`risk.py`) loads whatever `governance_settings.active_methodology_version_id` points to without checking that it was approved; the runtime role can update that column | **Open.** Medium, because someone with the runtime role (ADV4) could point a tenant at an unapproved methodology and change every later risk level with no database-level refusal; the activation route itself refuses an unapproved version. Fix: check approval in `active_methodology` and add an approval guard trigger | Medium |
+| 33 | In `observe`, an unexpected evaluation error skips a person's conditions: `_person_block` (`gateway_check.py`) keeps rows 1 and 2 only, while spec 11.6 says rows 6 and 8 apply in both modes. Hash and parse failures already deny as `GOVERNANCE_INTEGRITY_FAILED`, so only a genuine bug reaches this path | **Open.** Fix: on an error, also deny when the current decision is an `APPROVE_CONDITIONAL` | Low |
+| 34 | Reviewer assignment has no separation check: `assign_reviewer` (`approvals.py`) lets the submitter, if they hold the role, choose the assignee, and accepts the submitter or an owner as assignee; `request_information` is open to the submitter. Neither approves anything, since the decision itself refuses them | **Open.** Fix: refuse the submitter and owners as assigner and assignee unless a policy permits self-approval | Low |
+| 35 | No index on `audit_events (tenant_id, subject_type, subject_id)`, which the asset history join (`inventory.py`) and the evidence-event lookup (`evidence.py`) filter on. Alongside risk 26 | **Open.** Performance only. Fix: add the index in a migration | Low |
+| 36 | Three duplicated classification-rank tables (`policy/engine.py`, `governance/engine/enforcement.py`, `governance/gateway_check.py`) with no test that ties them together. Drift could only deny, because an unknown classification ranks above every limit | **Open.** Fix: one shared table, or a test that they agree | Low |
+| 37 | A read tool with no `resource_kind` scores tool level 2 rather than 3, against the rule that unknown is not low. No such tool exists in the catalog today | **Open.** Fix: score it 3 | Low |
+| 38 | The incident page's reason textarea (Phase 2 code) loses its text after a server refusal | **Open.** UX only. Fix: restore it from the submitted values, as the governance forms do | Low |
 
 ## Proposed order of work
 
@@ -86,14 +93,15 @@ Run Compose on a machine with Docker and add it to CI. Run the Claude provider o
 with synthetic evidence. Add a nonce-based content security policy. Tune the `not_visible_references`
 severity using real data, load test investigations, and upgrade `pytest`.
 
-### Step 8: Governance follow-ups (risks 19 to 28, and 31)
+### Step 8: Governance follow-ups (risks 5, 19 to 28, and 31 to 38)
 
 In this order. First, add dashboard controls for suspend, revoke, reassess, retire, and adding
 evidence, so the emergency stop does not need the API (risk 20). Second, decide with the product
 owner whether `reassessment_interval_days` should refuse an approval whose dates exceed it, and
 make the other descriptive controls produce findings (risk 19). Third, compare decisions, votes, review
 status, verifications, and control assessments with their audit events on read, and use the hash
-anchors already written (risk 22). Then the Low items (21, 23 to 28, 31).
+anchors already written (risk 22). Fourth, close the governance-hold release gap in risk 5 and add the methodology guard (risk 32).
+Then the Low items (21, 23 to 28, 31, 33 to 38).
 
 ## What the Phase 3 audit fixed (Task 21)
 

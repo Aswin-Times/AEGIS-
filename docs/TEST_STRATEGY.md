@@ -70,7 +70,9 @@ third function name in `test_tenant_isolation_db.py`, new helpers in `tests/supp
 `tests/conftest.py` (`governance_worker_enabled=False`), and two new tests appended to
 `security/test_correlation.py` for the new `asset_id` filter on `/incidents`, with no existing
 assertion touched. In the frontend, one locator in `e2e/dashboard.spec.ts` was pinned to an exact
-match after the decision page began showing governance evidence (ledger ruling, Task 16).
+match after the decision page began showing governance evidence (ledger ruling, Task 16). `e2e/helpers.ts` also changed: `newRestrictedAgent` finds the seeded demo asset by name
+across pages, and `adminHeaders` became an alias of `headersFor("admin")`, with no assertion changed
+(`DECISIONS.md`, note after the build rulings).
 
 ## The governance workflow proof
 
