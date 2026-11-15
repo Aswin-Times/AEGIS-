@@ -50,6 +50,9 @@ export default async function CompliancePage({
     return (
       <>
         <PageHeader title="Compliance mapping" />
+        <p className="mb-4 rounded-md border border-line bg-subtle p-3">
+          Whatever this page shows, a mapping to a framework is not a certification of compliance.
+        </p>
         <LoadFailure what="Frameworks" message={message} />
       </>
     );

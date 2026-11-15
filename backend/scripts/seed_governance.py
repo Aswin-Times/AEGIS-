@@ -78,7 +78,8 @@ SPECS = (
     ),
 )
 
-# Created last, because the newest asset is the one other tools pick first.
+# Created last: the e2e helper newRestrictedAgent attaches agents to the newest asset, and an
+# asset suspended by the seed would turn those agents' test denials into GOVERNANCE_BLOCKED.
 NOT_GOVERNED = (
     "Synthetic Not Governed Chatbot",
     "A synthetic asset with no governance state: no profile, assessment, or approval.",
@@ -165,7 +166,9 @@ class Seeder:
         )
 
     def verify(self, evidence: dict) -> dict:
-        if evidence["current_verification"] == "VERIFIED":
+        # Any earlier verification, a person's rejection included, stands: the seed never
+        # overwrites a decision someone made.
+        if evidence["latest_verification"] is not None:
             return evidence
         self.post(
             f"/governance/evidence/{evidence['id']}/verify",
@@ -229,8 +232,10 @@ class Seeder:
             evidence = self.evidence_for(asset, control, title)
             if spec.evidence == "verified":
                 evidence = self.verify(evidence)
-                self.assess_control(control, evidence)
-                evidence_ids = [evidence["id"]]
+                # A rejected item cannot back a claim, so it is neither assessed nor cited.
+                if evidence["current_verification"] == "VERIFIED":
+                    self.assess_control(control, evidence)
+                    evidence_ids = [evidence["id"]]
 
         # Each pass does the one next step the current status calls for, so an interrupted run
         # resumes and a finished one does nothing.

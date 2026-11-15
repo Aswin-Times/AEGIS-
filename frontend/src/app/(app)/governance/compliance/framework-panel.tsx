@@ -27,10 +27,12 @@ export function FrameworkPanel({
   selected: boolean;
 }) {
   const library = LIBRARY[framework.library_status];
+  // NIST AI RMF calls its controls subcategories. No other framework is assumed to.
+  const unit = framework.key.startsWith("nist") ? "subcategories" : "controls";
   const counted =
     framework.source_control_count === null
       ? `${framework.control_count} controls`
-      : `${framework.control_count} of ${framework.source_control_count} subcategories`;
+      : `${framework.control_count} of ${framework.source_control_count} ${unit}`;
   return (
     <Panel title={framework.name}>
       <div className="space-y-2 p-3">

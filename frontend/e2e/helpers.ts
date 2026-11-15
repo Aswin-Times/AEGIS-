@@ -50,10 +50,18 @@ export async function newRestrictedAgent() {
     expect(response.status).toBeLessThan(300);
     return response.json();
   };
-  const assets = await (await fetch(`${API}/assets`, { headers })).json();
+  // The seeded gateway demo asset, found by name on any page: it is the oldest, so it is not
+  // on the first page once enough assets exist.
+  let demoAsset: { id: string } | undefined;
+  for (let offset = 0; !demoAsset; offset += 100) {
+    const page = await (await fetch(`${API}/assets?limit=100&offset=${offset}`, { headers })).json();
+    demoAsset = page.items.find((item: { name: string }) => item.name === "Synthetic Research Assistant");
+    if (page.items.length === 0 || offset + 100 >= page.total) break;
+  }
+  expect(demoAsset, "the seeded demo asset").toBeDefined();
   const name = `synthetic-e2e-${randomUUID().slice(0, 8)}`;
   const agent = await post("/agents", {
-    asset_id: assets.items[0].id,
+    asset_id: demoAsset!.id,
     name,
     owner: "Synthetic E2E",
   });

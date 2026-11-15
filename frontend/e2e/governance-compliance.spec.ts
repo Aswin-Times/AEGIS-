@@ -336,7 +336,7 @@ test("a submitter cannot verify their own evidence, and the page shows the API's
   const evidence = await newEvidence(control.id);
   const body = { outcome: "VERIFIED", method: "manual_attestation", note: "Synthetic self-check" };
   const refused = await refusal(`/governance/evidence/${evidence.id}/verify`, body, "admin");
-  expect(refused.status).toBeGreaterThanOrEqual(400);
+  expect(refused).toMatchObject({ status: 403, code: "SELF_VERIFICATION_REFUSED" });
 
   await tenant.signIn(page, "admin");
   await page.goto(`/governance/compliance/controls/${control.id}`);

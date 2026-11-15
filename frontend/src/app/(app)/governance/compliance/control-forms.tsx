@@ -77,12 +77,20 @@ export function AssessControl({
               />
             )}
           </Field>
-          <fieldset aria-describedby={`${controlId}-cited`}>
+          <fieldset
+            aria-describedby={`${controlId}-cited${state.fieldErrors?.evidence_ids ? ` ${controlId}-cited-error` : ""}`}
+            aria-invalid={state.fieldErrors?.evidence_ids ? true : undefined}
+          >
             <legend className="text-sm font-medium">Evidence cited</legend>
             <p id={`${controlId}-cited`} className="text-xs text-muted">
               Implemented and Partially implemented need at least one linked item that a reviewer
               has verified. Unverified or rejected evidence does not count.
             </p>
+            {state.fieldErrors?.evidence_ids && (
+              <p id={`${controlId}-cited-error`} className="text-xs text-deny">
+                {state.fieldErrors.evidence_ids}
+              </p>
+            )}
             {evidence.length === 0 ? (
               <p className="text-sm text-muted">No evidence is linked to this control.</p>
             ) : (

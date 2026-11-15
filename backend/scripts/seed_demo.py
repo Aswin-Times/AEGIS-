@@ -54,10 +54,23 @@ def seed(base_url: str, owner_url: str, credentials_path: Path) -> None:
     with httpx.Client(base_url=f"{base_url}/api/v1", timeout=30) as client:
         token = client.post("/auth/login", json=admin_login).raise_for_status().json()
         admin = {"Authorization": f"Bearer {token['access_token']}"}
-        assets = client.get("/assets", params={"limit": 100}, headers=admin).raise_for_status()
-        if not any(item["name"] == GATEWAY_ASSET for item in assets.json()["items"]):
+        if not _has_asset(client, admin, GATEWAY_ASSET):
             _seed_gateway_demo(client, admin)
     seed_governance(base_url, admin_login, _login("reviewer@synthetic.example.test", password))
+
+
+def _has_asset(client: httpx.Client, admin: dict, name: str) -> bool:
+    """Every page, because the list is newest first and the demo asset is the oldest."""
+    offset = 0
+    while True:
+        page = client.get(
+            "/assets", params={"limit": 100, "offset": offset}, headers=admin
+        ).raise_for_status().json()
+        if any(item["name"] == name for item in page["items"]):
+            return True
+        offset += len(page["items"])
+        if not page["items"] or offset >= page["total"]:
+            return False
 
 
 def _seed_gateway_demo(client: httpx.Client, admin: dict) -> None:
