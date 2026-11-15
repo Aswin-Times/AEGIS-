@@ -29,6 +29,28 @@ EVIDENCE = "src/aegis/investigation/evidence.py"
 HYPOTHESES = "src/aegis/investigation/hypotheses.py"
 INVESTIGATION = "src/aegis/investigation/service.py"
 UNIT_RULES = "tests/unit/test_correlation_rules.py"
+APPROVALS = "src/aegis/governance/approvals.py"
+ASSETS = "src/aegis/governance/assets.py"
+REGISTRY = "src/aegis/registry/service.py"
+GOVERNANCE_ROUTES = "src/aegis/api/routes_governance.py"
+RETIRED_MIGRATION = "migrations/versions/0010_governance_retired.py"
+LIFECYCLE = f"{SEC}/test_governance_lifecycle_actions.py"
+GOVERNANCE_EVIDENCE = "src/aegis/governance/evidence.py"
+EVIDENCE_TESTS = f"{SEC}/test_governance_evidence.py"
+COMPLIANCE = "src/aegis/governance/compliance.py"
+COMPLIANCE_TESTS = f"{SEC}/test_governance_compliance.py"
+FRAMEWORKS_MIGRATION = "migrations/versions/0012_governance_frameworks.py"
+ENFORCEMENT = "src/aegis/governance/engine/enforcement.py"
+ENFORCEMENT_TESTS = "tests/unit/test_governance_enforcement.py"
+GATEWAY_CHECK = "src/aegis/governance/gateway_check.py"
+GATEWAY_TESTS = f"{SEC}/test_governance_gateway.py"
+RISK_ENGINE = "src/aegis/governance/engine/risk.py"
+EVIDENCE_MIGRATION = "migrations/versions/0011_governance_evidence.py"
+REVIEWS = "src/aegis/governance/reviews.py"
+REVIEWS_MIGRATION = "migrations/versions/0014_governance_reviews.py"
+REVIEW_TESTS = f"{SEC}/test_governance_reviews.py"
+AUDIT_TESTS = f"{SEC}/test_governance_audit.py"
+LINK_JOIN = "latest, latest.c.evidence_id == GovernanceEvidenceControl.evidence_id"
 
 
 @dataclass(frozen=True)
@@ -385,6 +407,251 @@ MUTATIONS = [
              "        if llm:\n"
              "            _ask_model(llm, prompt, llm_timeout_seconds)\n",
              "tests/security/test_llm_investigation.py"),
+    Mutation("Suspension sets no hard block", APPROVALS,
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)\n"
+             "    return decision\n\n\ndef retire",
+             "current_decision_id=decision.id,\n               "
+             "valid_until=None, next_review_at=None)\n    return decision\n\n\ndef retire",
+             LIFECYCLE),
+    Mutation("Suspension keeps the approval window", APPROVALS,
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id, valid_until=None, next_review_at=None)\n"
+             "    return decision\n\n\ndef retire",
+             "current_decision_id=decision.id,\n               "
+             "hard_block_decision_id=decision.id)\n    return decision\n\n\ndef retire",
+             LIFECYCLE),
+    Mutation("Suspension leaves the review open", APPROVALS,
+             "review = _withdraw_open_review(session, asset_id, now)", "review = None",
+             LIFECYCLE),
+    Mutation("Retirement keeps the approval window", APPROVALS,
+             "current_decision_id=decision.id,\n               valid_until=None, "
+             "next_review_at=None)\n    return decision\n\n\ndef _reassessment_decision",
+             "current_decision_id=decision.id)\n    return decision\n\n\n"
+             "def _reassessment_decision", LIFECYCLE),
+    Mutation("Retired row may still change", RETIRED_MIGRATION,
+             "IF OLD.status = 'RETIRED' THEN", "IF FALSE THEN", LIFECYCLE),
+    Mutation("Changed profile does not force reassessment", ASSETS,
+             "forces_reassessment = state is not None and state.status in APPROVED_STATUSES",
+             "forces_reassessment = False", LIFECYCLE),
+    Mutation("Unchanged profile saves a new version", ASSETS,
+             "if current is not None and current.content_hash == content_hash:", "if False:",
+             LIFECYCLE),
+    Mutation("Added grant does not force reassessment", REGISTRY,
+             "    mark_grant_changed(session, user, now, agent_id)\n"
+             "    session.add(AgentToolGrant(",
+             "    session.add(AgentToolGrant(", LIFECYCLE),
+    Mutation("Added resource grant does not force reassessment", REGISTRY,
+             "    mark_grant_changed(session, user, now, agent_id)\n    session.add(\n"
+             "        AgentResourceGrant(",
+             "    session.add(\n        AgentResourceGrant(", LIFECYCLE),
+    Mutation("Grant hook acts on an unapproved asset", APPROVALS,
+             "if state is None or state.status not in APPROVED_STATUSES:",
+             "if state is None:", LIFECYCLE),
+    Mutation("State locked before the agent rows", ASSETS,
+             "    lock_asset_agents(session, asset_id)\n"
+             "    return load_state_for_update(session, asset_id)",
+             "    state = load_state_for_update(session, asset_id)\n"
+             "    lock_asset_agents(session, asset_id)\n    return state", LIFECYCLE),
+    Mutation("Reassess open to any user", GOVERNANCE_ROUTES,
+             "def asset_reassess(id: UUID, body: LifecycleIn, user: SuspenderDep,",
+             "def asset_reassess(id: UUID, body: LifecycleIn, user: UserDep,", LIFECYCLE),
+    Mutation("Retire open to a suspender", GOVERNANCE_ROUTES,
+             "def asset_retire(id: UUID, body: LifecycleIn, user: AdminDep,",
+             "def asset_retire(id: UUID, body: LifecycleIn, user: SuspenderDep,", LIFECYCLE),
+    Mutation("Submitter can verify own evidence", GOVERNANCE_EVIDENCE,
+             "if evidence.submitted_by == user.id:", "if False:", EVIDENCE_TESTS),
+    Mutation("Inline hash trusted from client", GOVERNANCE_EVIDENCE,
+             'model_config = ConfigDict(extra="forbid")\n\n    source_type: Literal["inline"]\n'
+             '    content_text: Annotated[str, StringConstraints(strict=True, min_length=1)]\n'
+             '\n    def stored_hash(self) -> str:\n        return sha256_hex(self.content_text)\n',
+             'model_config = ConfigDict(extra="allow")\n\n    source_type: Literal["inline"]\n'
+             '    content_text: Annotated[str, StringConstraints(strict=True, min_length=1)]\n'
+             '    content_sha256: str | None = None\n'
+             '\n    def stored_hash(self) -> str:\n'
+             '        return self.content_sha256 or sha256_hex(self.content_text)\n',
+             EVIDENCE_TESTS),
+    Mutation("Evidence not anchored to its submission event", GOVERNANCE_EVIDENCE,
+             "    if outcome == VERIFIED:\n        _check_submission_event(session, evidence)\n",
+             "    if outcome == VERIFIED:\n", EVIDENCE_TESTS),
+    Mutation("Unverified evidence counted as verified", GOVERNANCE_EVIDENCE,
+             ".join(latest, latest.c.evidence_id == GovernanceEvidence.id)\n"
+             "        .where(GovernanceEvidence.asset_id == asset_id, "
+             "latest.c.outcome == VERIFIED)",
+             ".where(GovernanceEvidence.asset_id == asset_id)", EVIDENCE_TESTS),
+    Mutation("Unverified evidence supports a control status", GOVERNANCE_EVIDENCE,
+             f"        .join({LINK_JOIN})\n        .where(latest.c.outcome == VERIFIED)\n",
+             f"        .outerjoin({LINK_JOIN})\n", COMPLIANCE_TESTS),
+    Mutation("Rejected evidence supports a control status", GOVERNANCE_EVIDENCE,
+             f"        .join({LINK_JOIN})\n        .where(latest.c.outcome == VERIFIED)\n",
+             f"        .join({LINK_JOIN})\n"
+             "        .where(latest.c.outcome.in_((VERIFIED, REJECTED)))\n",
+             COMPLIANCE_TESTS),
+    Mutation("Control assessment open to a non-reviewer", COMPLIANCE,
+             "    if not holds_reviewer(session, user.id):\n        raise Forbidden()\n"
+             "    cited = ", "    cited = ", COMPLIANCE_TESTS),
+    Mutation("Control assessment guard trigger absent", FRAMEWORKS_MIGRATION,
+             "IF NEW.status IN ('IMPLEMENTED', 'PARTIALLY_IMPLEMENTED') AND NOT EXISTS (",
+             "IF false AND NOT EXISTS (", COMPLIANCE_TESTS),
+    Mutation("Retired asset allowed", ENFORCEMENT,
+             'if facts.status == "RETIRED":', "if False:", ENFORCEMENT_TESTS),
+    Mutation("Hard block ignored", ENFORCEMENT,
+             "if facts.hard_blocked:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Integrity failure ignored", ENFORCEMENT,
+             "if not facts.conditions_intact:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Approval expiry not enforced", ENFORCEMENT,
+             "facts.now >= facts.valid_until", "facts.now > facts.valid_until",
+             ENFORCEMENT_TESTS),
+    Mutation("Expiry check removed", ENFORCEMENT,
+             "if facts.valid_until is not None and facts.now >= facts.valid_until:",
+             "if False:", ENFORCEMENT_TESTS),
+    Mutation("Condition deny ignored", ENFORCEMENT,
+             "if conditions is not None and _condition_denies(conditions, action):",
+             "if False:", ENFORCEMENT_TESTS),
+    Mutation("Combine lets a governance deny loosen a policy deny", ENFORCEMENT,
+             "if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             "if result.verdict not in (", ENFORCEMENT_TESTS),
+    Mutation("Combine ignores a governance hold", ENFORCEMENT,
+             "if evaluation.outcome is Outcome.ALLOW:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Unknown mode fails open to observe", ENFORCEMENT,
+             'if facts.mode == "observe":', 'if facts.mode != "enforce":', ENFORCEMENT_TESTS),
+    Mutation("Not-approved row removed", ENFORCEMENT,
+             "elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:",
+             "elif False:", ENFORCEMENT_TESTS),
+    Mutation("Reassessment and condition hold rows swapped", ENFORCEMENT,
+             """    if recorded is None and facts.status in _REASSESSING:
+        recorded = _recorded_or_applied(facts, Verdict.HOLD, "GOVERNANCE_REASSESSMENT_REQUIRED")
+        if recorded.verdict is Verdict.HOLD:
+            return recorded
+    if conditions is not None and _condition_holds(conditions, action):
+        return GovernanceCheck(Verdict.HOLD, "GOVERNANCE_CONDITION_HOLD")
+""",
+             """    if conditions is not None and _condition_holds(conditions, action):
+        return GovernanceCheck(Verdict.HOLD, "GOVERNANCE_CONDITION_HOLD")
+    if recorded is None and facts.status in _REASSESSING:
+        recorded = _recorded_or_applied(facts, Verdict.HOLD, "GOVERNANCE_REASSESSMENT_REQUIRED")
+        if recorded.verdict is Verdict.HOLD:
+            return recorded
+""", ENFORCEMENT_TESTS),
+    Mutation("Integrity check moved below expiry", ENFORCEMENT,
+             """    if not facts.conditions_intact:
+        return _deny("GOVERNANCE_INTEGRITY_FAILED")
+
+    recorded: GovernanceCheck | None = None
+    if facts.valid_until is not None and facts.now >= facts.valid_until:
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+    elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:
+        # No state row, no approval in force, or a status that cannot hold one: fail closed.
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_NOT_APPROVED")
+    if recorded is not None and recorded.verdict is Verdict.DENY:
+        return recorded
+""",
+             """    recorded: GovernanceCheck | None = None
+    if facts.valid_until is not None and facts.now >= facts.valid_until:
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_APPROVAL_EXPIRED")
+    elif facts.valid_until is None or facts.status not in _APPROVED | _REASSESSING:
+        # No state row, no approval in force, or a status that cannot hold one: fail closed.
+        recorded = _recorded_or_applied(facts, Verdict.DENY, "GOVERNANCE_NOT_APPROVED")
+    if recorded is not None and recorded.verdict is Verdict.DENY:
+        return recorded
+    if not facts.conditions_intact:
+        return _deny("GOVERNANCE_INTEGRITY_FAILED")
+""", ENFORCEMENT_TESTS),
+    Mutation("Classification limit not enforced", ENFORCEMENT,
+             "return rank is None or rank > _CLASSIFICATION_RANK[limit]", "return False",
+             ENFORCEMENT_TESTS),
+    Mutation("Combine drops the deny branch", ENFORCEMENT,
+             "if result.verdict is Verdict.DENY:", "if False:", ENFORCEMENT_TESTS),
+    Mutation("Recorded row shadows a condition deny in observe", ENFORCEMENT,
+             "if conditions is not None and _condition_denies(conditions, action):",
+             "if recorded is None and conditions is not None "
+             "and _condition_denies(conditions, action):",
+             ENFORCEMENT_TESTS),
+    Mutation("Recorded row shadows a condition hold in observe", ENFORCEMENT,
+             "if conditions is not None and _condition_holds(conditions, action):",
+             "if recorded is None and conditions is not None "
+             "and _condition_holds(conditions, action):",
+             ENFORCEMENT_TESTS),
+    Mutation("Governance: gateway check result ignored", GATEWAY,
+             "return combine(policy, governance.check), governance",
+             "return policy, governance", GATEWAY_TESTS),
+    Mutation("Governance: combine can loosen a policy result", ENFORCEMENT,
+             "    if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             "    if result.verdict is Verdict.PASS:\n"
+             "        return Evaluation(Outcome.ALLOW, evaluation.reason_code)\n"
+             "    if evaluation.outcome is Outcome.DENY or result.verdict not in (",
+             GATEWAY_TESTS),
+    Mutation("Governance: hard block ignored at the gateway", GATEWAY_CHECK,
+             "hard_blocked=is_hard_blocked(state.status, state.hard_block_decision_id),",
+             "hard_blocked=False,", GATEWAY_TESTS),
+    Mutation("Governance: blocking status ignored when its block is missing", GATEWAY_CHECK,
+             "return hard_block_decision_id is not None or status in _BLOCKING_STATUSES",
+             "return hard_block_decision_id is not None", GATEWAY_TESTS),
+    Mutation("Governance: approval expiry ignored at the gateway", GATEWAY_CHECK,
+             "valid_until=state.valid_until,",
+             "valid_until=state.valid_until and now.replace(year=now.year + 1),",
+             GATEWAY_TESTS),
+    Mutation("Governance: unreadable attachment treated as no resource", GATEWAY_CHECK,
+             "seen.append(facts.attachment.classification or UNKNOWN_CLASSIFICATION)",
+             "seen.extend([facts.attachment.classification] "
+             "if facts.attachment.classification else [])", GATEWAY_TESTS),
+    Mutation("Governance: missing current decision read as no conditions", GATEWAY_CHECK,
+             "    if decision is None:\n        return None, False",
+             "    if decision is None:\n        return None, True", GATEWAY_TESTS),
+    Mutation("Governance: check failure passes in enforce", GATEWAY_CHECK,
+             "verdict = Verdict.RECORDED_DENY if mode == DEFAULT_MODE else Verdict.DENY",
+             "verdict = Verdict.RECORDED_DENY", GATEWAY_TESTS),
+    Mutation("Governance: suspend without agent locks", ASSETS,
+             "    lock_asset_agents(session, asset_id)\n"
+             "    return load_state_for_update(session, asset_id)",
+             "    return load_state_for_update(session, asset_id)", GATEWAY_TESTS),
+    Mutation("Governance: agent rows locked against foreign key checks", ASSETS,
+             ".with_for_update(key_share=True)", ".with_for_update()", GATEWAY_TESTS),
+    Mutation("Governance: mode change open to any user", GOVERNANCE_ROUTES,
+             "def enforcement_set(body: EnforcementIn, user: AdminDep,",
+             "def enforcement_set(body: EnforcementIn, user: UserDep,", GATEWAY_TESTS),
+    Mutation("Governance: self-approval check removed", APPROVALS,
+             'if user.id == review.submitted_by and controls.get("self_approval_permitted") '
+             "is not True:", "if False:", f"{SEC}/test_governance_separation.py"),
+    Mutation("Governance: hard-block trigger clause removed", RETIRED_MIGRATION,
+             "IF OLD.hard_block_decision_id IS NOT NULL AND NEW.hard_block_decision_id IS NULL",
+             "IF FALSE", f"{SEC}/test_governance_assets.py"),
+    Mutation("Governance: evidence-verification self-check trigger removed", EVIDENCE_MIGRATION,
+             "        IF NEW.verified_by = (\n", "        IF FALSE AND NEW.verified_by = (\n",
+             EVIDENCE_TESTS),
+    Mutation("Governance: EVIDENCE_REQUIRED check removed", COMPLIANCE,
+             "if status in CLAIMS and not has_verified_evidence(session, control.id):",
+             "if False:", COMPLIANCE_TESTS),
+    Mutation("Governance: incomplete assessment given a level", RISK_ENGINE,
+             'status="INCOMPLETE",\n            score=None,\n            risk_level=None,',
+             'status="INCOMPLETE",\n            score=None,\n            risk_level="LOW",',
+             "tests/unit/test_governance_risk.py"),
+    Mutation("Governance: review worker moves an asset that is not yet due", REVIEWS,
+             "    if state.status not in APPROVED_STATUSES:\n        return False\n",
+             "    if state.status in APPROVED_STATUSES:\n        return True\n", REVIEW_TESTS),
+    Mutation("Governance: review worker skips the re-check under the lock", REVIEWS,
+             "    if state is None or not is_due(state, now):\n        return None\n",
+             "    if state is None:\n        return None\n", REVIEW_TESTS),
+    Mutation("Governance: review worker clears the hard block", APPROVALS,
+             "transition(session, state, GovernanceStatus.REASSESSMENT_REQUIRED, now)",
+             "transition(session, state, GovernanceStatus.REASSESSMENT_REQUIRED, now, "
+             "hard_block_decision_id=None)", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup returns asset ids", REVIEWS_MIGRATION,
+             "SELECT DISTINCT tenant_id FROM public.asset_governance_state",
+             "SELECT DISTINCT asset_id FROM public.asset_governance_state", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup ignores the date", REVIEWS_MIGRATION,
+             "AND (next_review_at <= p_now OR valid_until <= p_now)", "", REVIEW_TESTS),
+    Mutation("Governance: due-review lookup executable by PUBLIC", REVIEWS_MIGRATION,
+             '"REVOKE ALL ON FUNCTION aegis_tenants_with_due_governance_reviews(timestamptz) '
+             'FROM PUBLIC",', '"SELECT 1",', REVIEW_TESTS),
+    Mutation("Governance: check failure lets a blocked asset through in observe", GATEWAY_CHECK,
+             "return _person_block(state) or (evaluation_error(mode), None)",
+             "return evaluation_error(mode), None", AUDIT_TESTS),
+    Mutation("Database errors log their bound parameters", "src/aegis/db/session.py",
+             "hide_parameters=True,", "hide_parameters=False,", AUDIT_TESTS),
+    Mutation("Provisioning errors carry their bound parameters", "src/aegis/provisioning.py",
+             "role: str) -> UUID:\n    engine = create_engine(owner_url, hide_parameters=True)",
+             "role: str) -> UUID:\n    engine = create_engine(owner_url)", AUDIT_TESTS),
 ]
 
 

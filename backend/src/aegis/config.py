@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     correlation_worker_enabled: bool = True
     correlation_poll_seconds: float = 2.0
 
+    governance_worker_enabled: bool = True
+    governance_review_poll_seconds: float = 60.0
+
     # Optional. Investigations are complete without a provider.
     llm_provider: Literal["none", "anthropic"] = "none"
     llm_model: str = "claude-opus-5-5"

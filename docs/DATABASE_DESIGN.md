@@ -63,6 +63,18 @@ tenants 1--* users
 | `investigation_findings` | `run_id`, `kind`, `source`, `statement`, `position` | Append-only. `CHECK ((source = 'llm') = (kind = 'ai_hypothesis'))`. A deferred constraint trigger requires evidence for facts, rule results, and hypotheses |
 | `finding_evidence` | One nullable foreign key per record type | `CHECK (num_nonnulls(...) = 1)`. All composite, so another tenant's record cannot be referenced |
 
+## Phase 3 summary
+
+Migrations `0005` to `0014` add 22 tenant tables, all with `tenant_id NOT NULL`, `UNIQUE (tenant_id,
+id)` (or a tenant-leading primary key), composite tenant foreign keys, `ENABLE` and `FORCE` row-level
+security, and the `tenant_isolation` policy. Four of them can be updated in named columns
+(`governance_settings`, `governance_role_grants`, `asset_governance_state`, `governance_reviews`);
+the other 18 are append-only, which
+`test_governance_audit.py::test_every_governance_history_table_rejects_update_delete_and_truncate`
+checks against the live catalog. Migration `0010` changes the state guard and adds no table;
+`0014` adds one function and one owner policy. The runtime role's grants are compared with the
+catalog by `test_tenant_isolation_db.py`.
+
 ## Phase 3 tables (governance, migration `0005`)
 
 | Table | Key columns | Notes |
@@ -95,6 +107,8 @@ These are separate from the runtime `policies` and `policy_versions`, which stay
 | `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | Append-only, with `UNIQUE (tenant_id, policy_id, version)`. `effective_from` is required and `review_by` optional, and `CHECK (review_by IS NULL OR review_by > effective_from)`. `content_hash` covers `policy_id`, `version`, `effective_from`, `review_by` (UTC, fixed-width), and the document, so editing the window or the numbering is detected as well as the document. It is checked at every load, and a mismatch fails closed |
 | `governance_policy_events` | `policy_version_id`, `event` (`APPROVED`, `ACTIVATED`, `DEACTIVATED`), `actor_id`, `audit_event_id` | Append-only. A partial unique index allows one `APPROVED` event per version. A version's activation status is its latest `ACTIVATED` or `DEACTIVATED` event by audit sequence, never by `created_at`. `aegis_policy_event_guard` is described below |
 
+Adding a tool or resource grant now takes the per-asset advisory lock and the asset's agent row locks, even for an asset with no governance state, so it can wait on in-flight gateway evaluations. The agent rows are locked `FOR NO KEY UPDATE`: it conflicts with the gateway's share lock as `FOR UPDATE` would, but not with the key share lock that a foreign key check on an inserted row takes, which a finishing execution needs while it holds the chain head.
+
 ## Phase 3 tables (governance reviews and decisions, migration `0009`)
 
 | Table | Purpose | Notes |
@@ -102,11 +116,32 @@ These are separate from the runtime `policies` and `policy_versions`, which stay
 | `governance_reviews` | `asset_id`, `assessment_id`, `profile_version_id`, `submitted_by`, `assigned_reviewer`, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `frozen_hash`, `status` (`OPEN`, `INFO_REQUESTED`, `DECIDED`, `WITHDRAWN`), `version`, `submitted_at`, `closed_at` | A partial unique index on `(tenant_id, asset_id)` where the status is `OPEN` or `INFO_REQUESTED` allows one open review per asset. `required_controls_canonical` holds the whole frozen policy outcome: applicable policy version IDs, required controls, `minimum_approvers`, `self_approval_permitted`, and `owner_approval_permitted`. `required_approvers` copies `minimum_approvers` and is `1` or `2`. `frozen_hash` covers the review's identity and the frozen text and is checked wherever the review is read, failing closed with `503 REVIEW_INTEGRITY_FAILED`. The hash is also written into the audit payload of the review's own `SUBMIT` decision, and a review read to make a decision is compared against that event (whose own hash is recomputed), so recomputing the unkeyed hash after an edit is detected. `closed_at` is set exactly when the status is `DECIDED` or `WITHDRAWN`. Composite keys tie the assessment and profile version to the same asset. `aegis_governance_review_guard` is described below |
 | `governance_decisions` | `asset_id`, `review_id`, `kind`, `from_status`, `to_status`, `actor_type` (`user`, `system`), `decided_by`, `decided_at`, `reason`, `assessment_id`, `conditions_canonical`, `conditions_hash`, `valid_until`, `next_review_at`, `audit_event_id` | Append-only. `UNIQUE (tenant_id, asset_id, id)` backs the state row's pointers. Composite keys tie the review and assessment to the same asset, and `audit_event_id` is required and must name a real audit event. Checks: `reason` is non-empty; a user is present exactly when the actor is `user`; the system actor is allowed only for `REQUIRE_REASSESSMENT`; `APPROVE` and `APPROVE_CONDITIONAL` need an assessment, `valid_until`, and `next_review_at`; `APPROVE_CONDITIONAL` needs non-empty conditions; conditions and their hash are both present or both absent. A partial unique index on `(tenant_id, review_id, decided_by)` for `APPROVAL_VOTE`, `APPROVE`, and `APPROVE_CONDITIONAL` keeps one person from counting twice on a review |
 | `governance_decision_policy_versions` | `decision_id`, `policy_version_id` | Append-only. The policy versions a decision was made against |
-| `governance_decision_evidence` | `decision_id`, `evidence_id` | Append-only. The foreign key to evidence is added with the evidence table |
+| `governance_decision_evidence` | `decision_id`, `evidence_id` | Append-only. A composite foreign key `(tenant_id, evidence_id)` to `governance_evidence`, added in `0011`, ties the reference to the tenant's own evidence. That the evidence belongs to the decision's asset is an invariant the service checks (`approve` requires each id to be evidence of the review's asset) |
+
+## Phase 3 tables (evidence, migration `0011`)
+
+| Table | Purpose | Notes |
+|-------|---------|-------|
+| `governance_evidence` | `asset_id`, `category` (the ten evidence categories), `description`, `source_type` (`internal_record`, `inline`, `external_reference`), `submitted_by`, `created_at`, `content_sha256`, `content_text`, `source_uri`, and the record columns `assessment_id`, `decision_id`, `audit_event_id`, `incident_id`, `investigation_run_id` | Append-only, with `UNIQUE (tenant_id, id)` and `UNIQUE (tenant_id, asset_id, id)`. One check fixes the shape by source: `inline` has text and a hash and nothing else; `external_reference` has a URI and a declared hash; `internal_record` has exactly one record column, and a hash unless the record is an incident or investigation run, which have none. The assessment and decision columns are composite foreign keys that include `asset_id`, so they can name only a record of the same asset; the other three include only the tenant. `content_text` is capped at 16000 bytes |
+| `governance_evidence_controls` | `evidence_id`, `control_id` | Append-only. `UNIQUE (tenant_id, evidence_id, control_id)`. The composite foreign key `(tenant_id, control_id)` to `governance_controls` is added in `0012`, so a link can name only a control of the tenant's own library. Links are written with the evidence and listed in its `governance.evidence_submitted` audit payload |
+| `governance_evidence_verifications` | `evidence_id`, `outcome` (`VERIFIED`, `REJECTED`), `method` (`internal_record_checked`, `content_recomputed`, `manual_attestation`), `note`, `verified_by`, `verified_at`, `audit_event_id` | Append-only. A verification's current status is the latest row by the audit sequence of its audit event, never by timestamp. `aegis_evidence_verifier_guard` refuses an insert whose `verified_by` is the evidence's `submitted_by` |
+
+## Phase 3 tables (framework libraries and control status, migration `0012`)
+
+| Table | Purpose | Notes |
+|-------|---------|-------|
+| `governance_frameworks` | `key`, `version`, `name`, `source_url`, `source_document`, `library_status` (`NOT_LOADED`, `LOADED_PARTIAL`, `LOADED`), `source_control_count`, `created_at` | Append-only. Seeded per tenant on first read from the libraries in `aegis.governance.frameworks`; `UNIQUE (tenant_id, key, version)` plus an insert that ignores conflicts, under a per-tenant advisory lock, keeps concurrent first reads from seeding twice. A loaded library, whole or partial, must state `source_control_count`, the number of identifiers its source defines, so coverage is shown against the source. `LOADED_PARTIAL` and `LOADED` are additions to spec 10, which names only `NOT_LOADED` |
+| `governance_controls` | `framework_id`, `position`, `control_identifier`, `name`, `description`, `source_reference`, `required_evidence` (a non-empty subset of the ten evidence categories), `policy_id`, `created_at` | Append-only. `UNIQUE (tenant_id, framework_id, control_identifier)`. `position` is the order in the source. `policy_id` is a composite foreign key to `governance_policies` and is null for seeded controls. `aegis_control_library_guard` refuses a control under a `NOT_LOADED` library |
+| `governance_control_assessments` | `control_id`, `status` (`IMPLEMENTED`, `PARTIALLY_IMPLEMENTED`, `NOT_IMPLEMENTED`, `NOT_APPLICABLE`), `note`, `assessed_by`, `assessed_at`, `audit_event_id` | Append-only, with `UNIQUE (tenant_id, control_id, id)`. The current status is the latest row by the audit sequence of its audit event. `NOT_ASSESSED` (no row) and `EVIDENCE_REQUIRED` (a stored claim of implementation whose linked evidence is no longer verified) are derived on read and never stored. `aegis_control_assessment_guard` refuses a claim of implementation without verified linked evidence |
+| `governance_control_assessment_evidence` | `assessment_id`, `control_id`, `evidence_id` | Append-only. The evidence an assessment cites. `(tenant_id, control_id, assessment_id)` references the assessment and `(tenant_id, evidence_id, control_id)` references `governance_evidence_controls`, so a citation must be evidence linked to the same control |
+
+## Phase 3 tables (gateway checks, migration `0013`)
+
+| Table | Purpose | Notes |
+|-------|---------|-------|
+| `governance_gateway_checks` | `decision_id`, `request_id`, `agent_id`, `asset_id`, `mode` (`observe`, `enforce`), `observed_status`, `verdict` (`PASS`, `RECORDED_DENY`, `RECORDED_HOLD`, `DENY`, `HOLD`), `reason_code`, `governance_decision_id`, `checked_at` | Append-only. One row per policy decision, including a denied one and each re-evaluation at execution, written in the decision's transaction: `UNIQUE (tenant_id, decision_id)`. Composite foreign keys to `policy_decisions`, `action_requests`, `agents`, `ai_assets`, and `governance_decisions`. `observed_status` is null when the asset had no governance state; `asset_id` is null only when the agent could not be read. `governance_decision_id` names the hard-block decision if one is set, otherwise the current decision. A check keeps `reason_code` null exactly when the verdict is `PASS`, and any reason must start with `GOVERNANCE_`. The decision's own `action.decision` audit event carries the same verdict in a `governance` object, so no audit event is added per action. Preflight counts recent rows per asset through `(tenant_id, asset_id, checked_at)` |
 
 ## Deferred tables
-
-The remaining governance tables (evidence, compliance, and gateway checks) arrive with later migrations.
 
 `users.role` is a single fixed role. A roles-and-permissions table has no use until
 custom roles are a requirement (`DECISIONS.md` D-009).
@@ -115,10 +150,13 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 
 | Trigger | Table | Rule |
 |---------|-------|------|
-| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
+| `aegis_reject_mutation` | `audit_events`, `policy_decisions`, `policy_versions`, `asset_profile_versions`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence`, `governance_evidence`, `governance_evidence_controls`, `governance_evidence_verifications`, `governance_frameworks`, `governance_controls`, `governance_control_assessments`, `governance_control_assessment_evidence`, `governance_gateway_checks` | Rejects `UPDATE` and `DELETE`. A statement-level trigger rejects `TRUNCATE` |
 | `aegis_approval_transition` | `approvals` | Allows only: `PENDING -> APPROVED, REJECTED, CANCELLED`, and `APPROVED -> EXECUTED, CANCELLED`. Forbids changing binding columns (`request_id`, `action_hash`, `decision_id`). Forbids `DELETE` |
-| `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update that moves the status into `APPROVED` or `CONDITIONALLY_APPROVED`. A status-unchanged update cannot clear it. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version` |
+| `aegis_governance_state_guard` | `asset_governance_state` | Inserts must be `DRAFT` at version 1 with no hard block. Updates must raise `version` by exactly one. A status change must follow the lifecycle table (spec 7.1). `tenant_id` and `asset_id` are immutable. `hard_block_decision_id` can go from set to null only in an update that moves the status into `APPROVED` or `CONDITIONALLY_APPROVED`. A status-unchanged update cannot clear it. Forbids `DELETE`. A status-unchanged update is allowed, and still bumps `version`, except on a `RETIRED` row, which refuses every update (replaced by migration `0010`, which changes the function and adds no table) |
 | `aegis_governance_review_guard` | `governance_reviews` | The frozen columns (identity, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `frozen_hash`, `submitted_at`) cannot change. `version` must rise by exactly one. A `DECIDED` or `WITHDRAWN` review cannot change. Forbids `DELETE`. A statement-level `aegis_reject_mutation` trigger rejects `TRUNCATE` |
+| `aegis_evidence_verifier_guard` | `governance_evidence_verifications` | On insert, `verified_by` cannot be the evidence's `submitted_by` |
+| `aegis_control_library_guard` | `governance_controls` | On insert, the framework's `library_status` cannot be `NOT_LOADED` |
+| `aegis_control_assessment_guard` | `governance_control_assessments` | On insert, `IMPLEMENTED` or `PARTIALLY_IMPLEMENTED` needs at least one evidence item linked to the control whose latest verification, by audit sequence, is `VERIFIED` |
 | `aegis_policy_event_guard` | `governance_policy_events` | On insert, an `APPROVED` event cannot name the version's creator as actor, and an `ACTIVATED` event needs an existing `APPROVED` event for the version |
 
 ## Runtime grants (`aegis_app`)
@@ -132,7 +170,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` | `governance_role_grants` |
 | `SELECT, INSERT`, `UPDATE (assigned_reviewer, status, version, closed_at)` | `governance_reviews` |
 | `SELECT, INSERT`, `UPDATE (status, version, current_profile_version_id, latest_assessment_id, current_decision_id, hard_block_decision_id, valid_until, next_review_at, updated_at)` | `asset_governance_state` |
-| `SELECT, INSERT` only | `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
+| `SELECT, INSERT` only | `governance_policies`, `governance_policy_versions`, `governance_policy_events`, `governance_decisions`, `governance_decision_policy_versions`, `governance_decision_evidence`, `governance_evidence`, `governance_evidence_controls`, `governance_evidence_verifications`, `governance_frameworks`, `governance_controls`, `governance_control_assessments`, `governance_control_assessment_evidence`, `governance_gateway_checks`, `risk_methodology_versions`, `risk_methodology_events`, `risk_assessments`, `ai_assets`, `resources`, `policies`, `policy_versions`, `action_requests`, `policy_decisions`, `simulated_outbox`, `audit_events`, `correlation_rule_versions`, `incident_events`, `incident_transitions`, `investigation_findings`, `finding_evidence`, `asset_profile_versions` |
 | `SELECT, INSERT`, `UPDATE (correlation_processed_at)` | `security_events` |
 | `SELECT, INSERT`, `UPDATE (status, version, event_count, first_observed_at, last_observed_at, assigned_to, updated_at)` | `incidents` |
 | `SELECT, INSERT`, `UPDATE (llm_status, llm_provider, llm_model, llm_rejected_count, llm_finished_at)` | `investigation_runs` |
@@ -141,7 +179,7 @@ custom roles are a requirement (`DECISIONS.md` D-009).
 | `SELECT, INSERT`, `UPDATE (status, decided_by, decided_at, comment)` | `approvals` |
 | `SELECT, INSERT`, `UPDATE (status, result, finished_at)` | `executions` |
 | `SELECT, INSERT, DELETE` | `agent_tool_grants`, `agent_resource_grants` |
-| `EXECUTE` | `aegis_resolve_tenant(text)` |
+| `EXECUTE` | `aegis_resolve_tenant(text)`, `aegis_tenants_with_pending_events()`, `aegis_tenants_with_due_governance_reviews(timestamptz)` |
 
 Updates are column-level, so the runtime role cannot change a request, an approval's binding,
 or an agent's owner. A test compares this table with the live catalog. Tenants and users can
@@ -150,9 +188,21 @@ only be created by the owner role, through `aegis.provisioning`.
 A request's current state is read from its decision, approval, and execution rows, so
 `action_requests` can stay insert-only.
 
+## `aegis_tenants_with_due_governance_reviews(p_now)`
+
+The third `SECURITY DEFINER` function (migration `0014`, spec 13). The review worker must find
+tenants with a due review without a tenant context, so this returns tenant IDs only: tenants with
+an asset in `APPROVED` or `CONDITIONALLY_APPROVED` whose `next_review_at` or `valid_until` is at or
+before `p_now`. It is owned by the migration role, has `search_path = pg_catalog, pg_temp`, and
+only `aegis_app` may execute it (`PUBLIC` is revoked). The matching owner policy
+`owner_finds_due_reviews` on `asset_governance_state` exposes only rows with a `next_review_at`,
+which a row has only while an approval stands. The worker then works inside each tenant's own
+context, one asset per transaction, and repeats the due test under the asset's locks. A test fails
+if any other such function appears.
+
 ## `aegis_tenants_with_pending_events()`
 
-The second and only other `SECURITY DEFINER` function. The correlation worker must find work without a
+The second `SECURITY DEFINER` function. The correlation worker must find work without a
 tenant context, so this returns tenant IDs only. The matching owner policy exposes only unprocessed
 rows. A test fails if any other such function appears.
 
@@ -160,7 +210,8 @@ rows. A test fails if any other such function appears.
 
 Login and failed-login auditing need a tenant ID before a tenant context exists. This
 `SECURITY DEFINER` function, with a fixed `search_path`, returns only the ID for an exact
-slug. It is the sole deliberate RLS exception. It allows slug probing; login returns the
+slug. It was the first deliberate RLS exception; the two functions above are the others, and
+`test_only_the_id_lookups_are_security_definer` fails if a fourth appears. It allows slug probing; login returns the
 same error whether or not the tenant exists, and the function has no HTTP exposure of its
 own.
 

@@ -1,6 +1,7 @@
 """Helpers that drive the system through its public API, as a real client would."""
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -41,6 +42,7 @@ class AgentHandle:
     key: str
     tenant: "TenantWorld"
     credential_id: str
+    asset_id: str | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -192,7 +194,27 @@ class TenantWorld:
         for resource in resources:
             self.created(f"/agents/{agent['id']}/resource-grants", {"resource_id": resource})
         credential = self.created(f"/agents/{agent['id']}/credentials", {})
-        return AgentHandle(agent["id"], credential["key"], self, credential["id"])
+        return AgentHandle(agent["id"], credential["key"], self, credential["id"], asset["id"])
+
+    def governed_agent(self, tools=(), resources=(), approve=True, conditions=None,
+                       valid_days=30) -> AgentHandle:
+        """An agent whose asset went through the real flow: profile, assessment, submission by
+        the admin, and approval by a second admin holding governance_reviewer."""
+        agent = self.agent(tools, resources)
+        save_profile(self, agent.asset_id)
+        assess(self, agent.asset_id)
+        if approve:
+            holder = reviewers(self)
+            review = submitted(self, agent.asset_id)
+            response = approve_review(self, review["id"], holder, conditions=conditions,
+                                      **window(valid_days, valid_days))
+            assert response.status_code == 201, response.text
+        return agent
+
+    def set_enforcement(self, mode: str, reason: str = "Synthetic mode change."):
+        response = self.post("/governance/enforcement", {"mode": mode, "reason": reason})
+        assert response.status_code == 200, response.text
+        return response.json()
 
     def activate(self, rules: list[dict[str, Any]]) -> dict[str, Any]:
         policy = self.created("/policies", {"name": self._unique("policy")})
@@ -265,3 +287,164 @@ def insert_decision(connection, tenant_id, asset_id, *, kind="SUSPEND", from_sta
          audit_event_id),
     )
     return decision_id
+
+
+# Governance review flow, shared by the approval and separation tests
+
+
+ASSETS = "/governance/assets"
+
+
+APPROVALS = "/governance/approvals"
+
+
+POLICIES = "/governance/policies"
+
+
+PROFILE = {
+    "asset_type": "ai_application",
+    "data_categories": ["internal"],
+    "external_exposure": "none",
+    "autonomy_level": "advisory",
+    "declared_tool_access": [],
+    "human_oversight": "in_the_loop",
+    "impact_level": "negligible",
+    "deployment_environment": "development",
+    "third_party_reliance": "none",
+}
+
+
+def save_profile(tenant, asset_id, body=None):
+    response = tenant.post(f"{ASSETS}/{asset_id}/profile", PROFILE if body is None else body)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def assess(tenant, asset_id):
+    response = tenant.post(f"{ASSETS}/{asset_id}/assess")
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def assessed_asset(tenant, profile=None) -> str:
+    asset_id = tenant.asset()["id"]
+    save_profile(tenant, asset_id, profile)
+    assess(tenant, asset_id)
+    return asset_id
+
+
+def submit(tenant, asset_id, reason="Ready for review.", headers=None):
+    body = {} if reason is None else {"reason": reason}
+    return tenant.post(f"{ASSETS}/{asset_id}/submit", body, headers=headers)
+
+
+def submitted(tenant, asset_id=None, **kwargs) -> dict:
+    response = submit(tenant, asset_id or assessed_asset(tenant), **kwargs)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def reviewers(tenant) -> dict:
+    """The first admin and a second admin, who each hold governance_reviewer. Returns the second."""
+    second = tenant.login_as("second-admin", "admin")
+    if not getattr(tenant, "reviewers_granted", False):
+        tenant.grant_governance("admin", by="second-admin")
+        tenant.grant_governance("second-admin", by="admin")
+        tenant.reviewers_granted = True
+    return second
+
+
+def activate_policy(tenant, severity="medium", applicability=None, **controls) -> str:
+    second = reviewers(tenant)
+    policy = tenant.post(POLICIES, {"name": f"policy-{uuid4().hex[:8]}",
+                                    "category": "general"}).json()
+    version = tenant.post(
+        f"{POLICIES}/{policy['id']}/versions",
+        {
+            "document": {"description": "synthetic", "severity": severity,
+                         "applicability": applicability or {}, "controls": controls},
+            "effective_from": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        },
+    ).json()
+    path = f"{POLICIES}/{policy['id']}/versions/{version['id']}"
+    assert tenant.post(f"{path}/approve", headers=second).status_code == 200
+    assert tenant.post(f"{path}/activate").status_code == 200
+    return version["id"]
+
+
+def assign(tenant, review_id, reviewer_id, headers):
+    return tenant.post(f"{APPROVALS}/{review_id}/assign", {"reviewer_id": reviewer_id},
+                       headers=headers)
+
+
+def review_of(tenant, review_id) -> dict:
+    response = tenant.get(f"{APPROVALS}/{review_id}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def detail_status(tenant, asset_id) -> str:
+    return tenant.get(f"{ASSETS}/{asset_id}").json()["governance_status"]
+
+
+def error_code(response) -> str:
+    return response.json()["error"]["code"]
+
+
+def decisions_of(attacker_sql, asset_id):
+    return attacker_sql.execute(
+        "SELECT d.kind, d.from_status, d.to_status, d.review_id, d.reason, d.id "
+        "FROM governance_decisions d JOIN audit_events a ON a.id = d.audit_event_id "
+        "WHERE d.asset_id = %s ORDER BY a.seq",
+        (asset_id,),
+    ).fetchall()
+
+
+def window(valid_days=365, review_days=180) -> dict:
+    now = datetime.now(UTC)
+    return {"valid_until": (now + timedelta(days=valid_days)).isoformat(),
+            "next_review_at": (now + timedelta(days=review_days)).isoformat()}
+
+
+def approve(tenant, review_id, headers, reason="Controls are adequate.", conditions=None,
+            **overrides):
+    body = {"reason": reason, **window(), **overrides}
+    if conditions is not None:
+        body["conditions"] = conditions
+    return tenant.post(f"{APPROVALS}/{review_id}/approve", body, headers=headers)
+
+
+# TenantWorld.governed_agent has a parameter named approve.
+approve_review = approve
+
+
+def reject(tenant, review_id, headers, reason="The risks are not mitigated."):
+    return tenant.post(f"{APPROVALS}/{review_id}/reject", {"reason": reason}, headers=headers)
+
+
+def another_holder(tenant, name):
+    """A further admin holding governance_reviewer, granted by the second admin."""
+    headers = tenant.login_as(name, "admin")
+    tenant.grant_governance(name, by="second-admin")
+    return headers
+
+
+def review_status_of(attacker_sql, review_id):
+    return attacker_sql.execute(
+        "SELECT status FROM governance_reviews WHERE id = %s", (review_id,)).fetchone()[0]
+
+
+def assert_review_untouched(tenant, attacker_sql, review, assigned=False):
+    """Nothing was decided: the review open, the asset still under review, no new decision."""
+    kinds = ["SUBMIT", "ASSIGN_REVIEWER"] if assigned else ["SUBMIT"]
+    assert [row[0] for row in decisions_of(attacker_sql, review["asset_id"])] == kinds
+    assert review_status_of(attacker_sql, review["id"]) == "OPEN"
+    assert detail_status(tenant, review["asset_id"]) == "UNDER_REVIEW"
+    assert tenant.verify_audit()["valid"] is True
+
+
+def revoke_governance(tenant, name):
+    """Revoke the governance_reviewer grant of the user logged in as `name`."""
+    people = tenant.get("/governance/people").json()["items"]
+    grant_id = next(p["reviewer_grant_id"] for p in people if p["id"] == tenant.user_id(name))
+    assert tenant.post(f"/governance/role-grants/{grant_id}/revoke").status_code == 200

@@ -118,6 +118,7 @@ def incidents_list(
     status: Annotated[IncidentStatus | None, Query()] = None,
     severity: Annotated[Severity | None, Query()] = None,
     rule_key: Annotated[str | None, Query(max_length=64)] = None,
+    asset_id: UUID | None = None,
     limit: LimitQuery = 50,
     offset: OffsetQuery = 0,
 ):
@@ -128,6 +129,11 @@ def incidents_list(
         conditions.append(Incident.severity == severity)
     if rule_key is not None:
         conditions.append(Incident.rule_key == rule_key)
+    if asset_id is not None:
+        # The incidents of the agents registered under this asset.
+        conditions.append(
+            Incident.agent_id.in_(select(Agent.id).where(Agent.asset_id == asset_id))
+        )
     with container.db.tenant_transaction(user.tenant_id) as session:
         rows = session.execute(
             _incident_query()

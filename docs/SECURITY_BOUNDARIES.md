@@ -49,6 +49,47 @@ Each boundary lists what crosses it, what enforces it, and what it does **not** 
 - **Rule:** LLM output is data. It may populate hypotheses and draft documents only.
 - **Enforced today by:** no LLM client exists, and a static test forbids importing one into `aegis.policy` or `aegis.gateway`.
 
+## B7. Governance to gateway (Phase 3)
+
+- **Crosses:** governance facts read inside the gateway's own transaction: the mode, the asset's
+  state row, the hard block, the current decision's conditions, `valid_until`, and the gateway's
+  clock.
+- **Enforced by:** a pure check (`governance/engine/enforcement.py`) whose verdict can only tighten
+  the policy outcome, never loosen it, and never replaces a deny's reason code. Lifecycle changes
+  lock the asset's agent rows `FOR NO KEY UPDATE` before the state row, which serializes them
+  against in-flight evaluations.
+- **Governance never controls:** whether a tool exists, is granted, or matches its resource; those
+  hard checks and the runtime policy run first.
+- **Does not protect:** anything outside the gateway; individual agents (status is per asset);
+  unapproved assets while the tenant is in `observe`; and an asset whose profile states false
+  facts, since assessments trust declared inputs except tool access.
+
+## Governance limits
+
+These are the spec's known limits (section 17) and those found while building it. `THREAT_MODEL.md`
+lists them with their threats.
+
+- `observe`, the default, enforces only decisions a person made (retired, hard block, conditions).
+  Expired and unapproved assets are recorded, not stopped, until an admin switches to `enforce`.
+- Assessments trust the declared profile; only tool access is observed. Default weights are
+  judgment, not calibration.
+- Governance is asset-level. All agents of an asset share its status.
+- A governance hold (`GOVERNANCE_CONDITION_HOLD` or `GOVERNANCE_REASSESSMENT_REQUIRED`) becomes an ordinary runtime approval (`gateway/service.py`), and `POST /approvals/{id}/approve` accepts any admin or reviewer (`routes_runtime.py`, `ReviewerDep`). So the asset's owner or the review's submitter can release a held action with no `governance_reviewer` grant and no self-approval refusal. This is the design of spec 11.2 (a hold uses the existing action approval flow), but it means separation of duties covers governance decisions, not the release of a held action. The later fix: refuse a runtime approval of a `GOVERNANCE_*` hold by the asset's submitter or owners (REMEDIATION_PLAN risk 5).
+- Two admins can grant each other `governance_reviewer` and collude. A stolen admin session can grant
+  it to another account. Both are audited, not prevented.
+- Someone with database control can forge governance records as they can any other. Two kinds of row are compared with their own audit event on read. A review's frozen values are compared with its `SUBMIT` decision's audit payload (`approvals.py` `verify_review_anchored`) when a decision is made, on `GET /approvals/{id}`, and when an `INFO_REQUESTED` review is replaced by resubmission; and an evidence row is compared with its `evidence_submitted` event when it is verified. The review's `assigned_reviewer`, which the runtime role can update, is not part of that comparison and is never checked against the `reviewer_id` in the `ASSIGN_REVIEWER` payload, so a changed assignee goes undetected. Other rows are checked at most against a hash stored in the same row, which someone who can write the row can recompute: policy and methodology versions, review `frozen_hash`, decision `conditions_hash` (the gateway reads conditions from the decision row alone), and profile hashes at submission and decision. Nothing compares decision rows, counted votes, review status and withdrawals, evidence verifications, control assessments, or policy and methodology events with their audit events; `run_assessment` reads the current profile without checking its hash; and the `content_hash`, `input_hash`, and `result_hash` values written into audit payloads are never read back.
+- External documents over 16,000 bytes can only be attested, not hash-checked.
+- A verification by a reviewer whose grant is later revoked still counts.
+- An expired but unprocessed approval is handled by the gateway's own clock; the review worker only
+  aligns the status. A passed review date also forces reassessment.
+- Most policy controls are shown to the reviewer, not enforced; `reassessment_interval_days` does
+  not bound approval dates.
+- The NIST AI RMF library is partial (19 of 72 subcategories) and ISO/IEC 42001 is not loaded. A
+  framework mapping is not a certification.
+- A mode switch is not serialized against in-flight evaluations.
+- The dashboard cannot suspend, revoke, retire, request reassessment, or add evidence; those are
+  API-only.
+
 ## Enforcement points and fail-closed behavior
 
 | Enforcement point | On failure |
@@ -63,6 +104,10 @@ Each boundary lists what crosses it, what enforces it, and what it does **not** 
 | Execution claim conflict | 409, no execution |
 | Approval state check | 409, no execution |
 | Action hash mismatch | Approval cancelled, no execution |
+| Governance check raises | A retired or hard-blocked asset is denied in both modes with `GOVERNANCE_RETIRED` or `GOVERNANCE_BLOCKED`. Any other asset: `enforce` denies with `GOVERNANCE_EVALUATION_ERROR`; `observe` records that code and does not block |
+| Governance check hits a database error | Rollback, 503, no execution, in both modes |
+| Stored conditions fail their hash or no longer parse | Deny, `GOVERNANCE_INTEGRITY_FAILED`, in both modes |
+| Stored governance policy, methodology, profile, assessment, or review fails its integrity check | 503 with the matching `*_INTEGRITY_FAILED` code |
 
 ## Limitations of the audit mechanism
 

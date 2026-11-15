@@ -37,14 +37,36 @@ def load_state_for_update(session: Session, asset_id: UUID) -> AssetGovernanceSt
         select(AssetGovernanceState)
         .where(AssetGovernanceState.asset_id == asset_id)
         .with_for_update()
+        # The row may have changed while this waited for the lock.
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 
 
+def lock_asset(session: Session, asset_id: UUID) -> None:
+    """One lock per asset, for the paths that may insert its state row, which cannot be locked
+    before it exists. It is the first lock taken."""
+    session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(str(asset_id), 0))))
+
+
 def lock_asset_agents(session: Session, asset_id: UUID) -> None:
-    """Serializes against in-flight gateway evaluations, which share-lock their agent row."""
+    """Serializes against in-flight gateway evaluations, which share-lock their agent row.
+
+    FOR NO KEY UPDATE conflicts with that share lock as FOR UPDATE does, but not with the key
+    share lock a foreign key check takes. A finishing execution holds the chain head and then
+    inserts rows that reference its agent, so FOR UPDATE here would deadlock with it.
+    """
     session.execute(
-        select(Agent.id).where(Agent.asset_id == asset_id).order_by(Agent.id).with_for_update()
+        select(Agent.id).where(Agent.asset_id == asset_id).order_by(Agent.id)
+        .with_for_update(key_share=True)
     ).all()
+
+
+def lock_asset_state(session: Session, asset_id: UUID) -> AssetGovernanceState | None:
+    """Every lock a change of status takes, in the order of spec 11.4: the asset, its agent rows,
+    then the state row. The review and the chain head come after."""
+    lock_asset(session, asset_id)
+    lock_asset_agents(session, asset_id)
+    return load_state_for_update(session, asset_id)
 
 
 def require_not_retired(state: AssetGovernanceState | None) -> None:
@@ -60,11 +82,15 @@ def _set_columns(state: AssetGovernanceState, columns: dict) -> None:
         setattr(state, name, value)
 
 
-def transition(session: Session, state: AssetGovernanceState, target: GovernanceStatus,
-               now: datetime, **columns) -> None:
+def require_transition(state: AssetGovernanceState, target: GovernanceStatus) -> None:
     if not can_transition(state.status, target):
         raise Conflict(f"An asset cannot move from {state.status} to {target}.",
                        code="INVALID_STATE_TRANSITION")
+
+
+def transition(session: Session, state: AssetGovernanceState, target: GovernanceStatus,
+               now: datetime, **columns) -> None:
+    require_transition(state, target)
     _set_columns(state, columns)
     state.status = target.value
     state.version += 1
@@ -80,23 +106,55 @@ def touch(session: Session, state: AssetGovernanceState, now: datetime, **column
     session.flush()
 
 
+def new_draft_state(session: Session, tenant_id: UUID, asset_id: UUID, now: datetime,
+                    profile_version_id: UUID | None = None) -> AssetGovernanceState:
+    """The first state row of an asset. The caller holds the asset lock."""
+    state = AssetGovernanceState(
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        status=GovernanceStatus.DRAFT.value,
+        version=1,
+        current_profile_version_id=profile_version_id,
+        updated_at=now,
+    )
+    session.add(state)
+    session.flush()
+    return state
+
+
 def _require_tenant_user(session: Session, user_id: UUID | None, field: str) -> None:
     if user_id is not None and session.get(User, user_id) is None:
         raise ValidationFailed(f"{field} must be a user in this tenant.")
 
 
+# Statuses in which an approval is in force and a change to what was assessed voids it.
+APPROVED_STATUSES = (GovernanceStatus.APPROVED.value, GovernanceStatus.CONDITIONALLY_APPROVED.value)
+
+
 def save_profile(session: Session, user: UserPrincipal, now: datetime, asset_id: UUID,
                  profile: AssetProfile) -> AssetProfileVersion:
+    """Save a new version, unless the profile is what is already current.
+
+    A real change to an approved asset requires reassessment (spec 5), because the approval was of
+    a different profile. Saving the current profile again changes nothing, so it cannot be used
+    to force one.
+    """
     if session.get(AiAsset, asset_id) is None:
         raise NotFound()
     _require_tenant_user(session, profile.business_owner_id, "business_owner_id")
     _require_tenant_user(session, profile.technical_owner_id, "technical_owner_id")
-    # Two first saves could otherwise both pick version 1 or both insert the state row.
-    session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(str(asset_id), 0))))
-    state = load_state_for_update(session, asset_id)
+    # Two first saves could otherwise both pick version 1 or both insert the state row, and a
+    # status change must serialize against the gateway as every other one does.
+    state = lock_asset_state(session, asset_id)
     require_not_retired(state)
 
     canonical = canonical_profile(profile)
+    content_hash = sha256_hex(canonical)
+    if state is not None and state.current_profile_version_id is not None:
+        current = session.get(AssetProfileVersion, state.current_profile_version_id)
+        if current is not None and current.content_hash == content_hash:
+            return current
+
     latest = session.execute(
         select(func.max(AssetProfileVersion.version)).where(
             AssetProfileVersion.asset_id == asset_id
@@ -108,7 +166,7 @@ def save_profile(session: Session, user: UserPrincipal, now: datetime, asset_id:
         asset_id=asset_id,
         version=(latest or 0) + 1,
         profile_canonical=canonical,
-        content_hash=sha256_hex(canonical),
+        content_hash=content_hash,
         business_owner_id=profile.business_owner_id,
         technical_owner_id=profile.technical_owner_id,
         created_by=user.id,
@@ -117,17 +175,9 @@ def save_profile(session: Session, user: UserPrincipal, now: datetime, asset_id:
     session.add(version)
     session.flush()
 
+    forces_reassessment = state is not None and state.status in APPROVED_STATUSES
     if state is None:
-        state = AssetGovernanceState(
-            tenant_id=user.tenant_id,
-            asset_id=asset_id,
-            status=GovernanceStatus.DRAFT.value,
-            version=1,
-            current_profile_version_id=version.id,
-            updated_at=now,
-        )
-        session.add(state)
-        session.flush()
+        state = new_draft_state(session, user.tenant_id, asset_id, now, version.id)
     else:
         touch(session, state, now, current_profile_version_id=version.id)
 
@@ -144,7 +194,14 @@ def save_profile(session: Session, user: UserPrincipal, now: datetime, asset_id:
             "profile_version_id": str(version.id),
             "version": version.version,
             "content_hash": version.content_hash,
-            "governance_status": state.status,
+            "governance_status": (GovernanceStatus.REASSESSMENT_REQUIRED.value
+                                  if forces_reassessment else state.status),
         },
     )
+    if forces_reassessment:
+        # approvals imports this module, so it cannot be imported at the top.
+        from aegis.governance.approvals import require_reassessment
+
+        require_reassessment(session, "user", user.id, now, asset_id,
+                             reason="Asset profile changed.")
     return version

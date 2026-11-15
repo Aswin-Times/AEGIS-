@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   FileLock2,
   Gavel,
+  Landmark,
   LayoutDashboard,
   ScrollText,
   Siren,
@@ -17,6 +18,7 @@ import { usePathname } from "next/navigation";
 const ITEMS = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/assets", label: "AI Assets", icon: Boxes },
+  { href: "/governance", label: "Governance", icon: Landmark },
   { href: "/agents", label: "Agent Registry", icon: Bot },
   { href: "/policies", label: "Policies", icon: FileLock2 },
   { href: "/incidents", label: "Incidents", icon: Siren },

@@ -129,7 +129,7 @@ test("a denied action shows evidence that the tool did not run", async ({ page }
 
   await page.goto(`/decisions/${denied.decision_id}`);
   await expect(page.getByText("The tool did not run. No execution record exists")).toBeVisible();
-  await expect(page.getByText("TOOL_NOT_GRANTED")).toBeVisible();
+  await expect(page.getByText("TOOL_NOT_GRANTED", { exact: true })).toBeVisible();
   await expect(page.getByText(denied.request_id)).toBeVisible();
 });
 

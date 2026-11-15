@@ -135,6 +135,7 @@ def world(urls: DatabaseUrls, jwt_key_path: Path) -> Iterator[World]:
         database_url=urls.app,
         jwt_private_key_path=jwt_key_path,
         correlation_worker_enabled=False,  # Tests run correlation explicitly, to be deterministic.
+        governance_worker_enabled=False,  # Likewise the review sweep.
     )
     spy = ToolSpy()
     app = create_app(settings, tools=spy.registry())

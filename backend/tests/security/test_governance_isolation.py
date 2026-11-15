@@ -230,6 +230,11 @@ def test_cross_tenant_approval_access(world, db):
                        ).status_code == 404
     assert second.post(f"{base}/request-information", {"reason": "x"}, headers=reviewer
                        ).status_code == 404
+    when = {"valid_until": "2099-01-01T00:00:00+00:00",
+            "next_review_at": "2098-01-01T00:00:00+00:00"}
+    assert second.post(f"{base}/approve", {"reason": "x", **when}, headers=reviewer
+                       ).status_code == 404
+    assert second.post(f"{base}/reject", {"reason": "x"}, headers=reviewer).status_code == 404
     assert second.get("/governance/overview").json()["awaiting_approval"] == 0
 
     # The owning side is unchanged, and its own reviewer can still act.
@@ -257,3 +262,134 @@ def test_cross_tenant_approval_access(world, db):
             {"id": uuid4(), "tenant": second.id, "asset": asset, "review": review["id"],
              "user": outsider},
         )
+
+    # And its own reviewer, not the other tenant's, decides it.
+    assert first.post(f"{base}/approve", {"reason": "x", **when}, headers=second_admin
+                      ).status_code == 201
+
+
+def test_cross_tenant_lifecycle_and_history_access(world):
+    from support import assess, save_profile
+
+    first, second = world.tenant(), world.tenant()
+    second.grant_governance("reviewer")
+    asset = first.asset()["id"]
+    base = f"/governance/assets/{asset}"
+    body = {"reason": "not yours"}
+
+    # The other tenant finds nothing, whatever its role or grants, and nothing is written.
+    for action, headers in (("suspend", None), ("revoke", None), ("reassess", None),
+                            ("retire", None), ("suspend", second.login("reviewer"))):
+        assert second.post(f"{base}/{action}", body, headers=headers).status_code == 404, action
+    assert second.get(f"{base}/history").status_code == 404
+    assert first.audit_events("governance.decision") == []
+    assert second.audit_events("governance.decision") == []
+    assert first.get(f"{base}").json()["governance_status"] is None
+
+    # History is a tenant's own: the other side's records never appear in it.
+    save_profile(first, asset)
+    assess(first, asset)
+    assert first.post(f"{base}/suspend", body).status_code == 201
+    assert [item["type"] for item in first.get(f"{base}/history").json()["items"]] == [
+        "profile_version", "assessment", "decision"]
+    assert second.get(f"{base}/history").status_code == 404
+    other = second.asset()["id"]
+    assert second.get(f"/governance/assets/{other}/history").json()["items"] == []
+    assert second.get("/governance/overview").json()["suspended"] == 0
+    assert first.get("/governance/overview").json()["suspended"] == 1
+
+    assert second.post(f"{base}/retire", body).status_code == 404
+
+
+def test_cross_tenant_evidence_access_is_not_found(world):
+    from support import approve, reviewers, submitted
+
+    first, second = world.tenant(), world.tenant()
+    holder = reviewers(first)
+    second.grant_governance("reviewer")
+    asset = first.asset()["id"]
+    body = {"asset_id": asset, "category": "model_evaluation", "description": "Synthetic.",
+            "source": {"source_type": "inline", "content_text": "synthetic text"}}
+
+    # The other tenant cannot add evidence to the asset, and nothing is written on either side.
+    assert second.post("/governance/evidence", body).status_code == 404
+    assert second.audit_events("governance.evidence_submitted") == []
+    created = first.post("/governance/evidence", body)
+    assert created.status_code == 201
+    path = f"/governance/evidence/{created.json()['id']}"
+
+    # It finds nothing to read or verify, whatever its role or grants.
+    assert second.get(path).status_code == 404
+    assert second.get("/governance/evidence").json()["total"] == 0
+    assert second.get("/governance/evidence", asset_id=asset).json()["total"] == 0
+    verify = {"outcome": "VERIFIED", "method": "manual_attestation", "note": "Mine now."}
+    assert second.post(f"{path}/verify", verify, headers=second.login("reviewer")
+                       ).status_code == 404
+    assert second.audit_events("governance.evidence_verified") == []
+    assert second.get("/governance/overview").json()["evidence_total"] == 0
+
+    # The owning side is unchanged, and can still verify with its own reviewer.
+    assert first.get(path).json()["current_verification"] == "UNVERIFIED"
+    assert first.post(f"{path}/verify", verify, headers=holder).status_code == 201
+    assert first.get("/governance/overview").json()["evidence_verified"] == 1
+    assert second.get("/governance/overview").json()["evidence_verified"] == 0
+
+    # Evidence of another tenant cannot be named on an approval.
+    review = submitted(first)
+    other = second.asset()["id"]
+    foreign = second.post("/governance/evidence", {**body, "asset_id": other}).json()["id"]
+    refused = approve(first, review["id"], holder, evidence_ids=[foreign])
+    assert refused.status_code == 422
+
+
+def test_cross_tenant_compliance_access_is_not_found(world):
+    from support import reviewers
+
+    first, second = world.tenant(), world.tenant()
+    holder = reviewers(first)
+    other_holder = reviewers(second)
+    mine = {item["key"]: item for item in first.get("/governance/frameworks").json()["items"]}
+    control = first.get("/governance/controls").json()["items"][0]["id"]
+    body = {"status": "NOT_APPLICABLE", "note": "Not yours."}
+
+    # The other tenant sees only its own library, and cannot assess this tenant's control.
+    theirs = {item["key"]: item for item in second.get("/governance/frameworks").json()["items"]}
+    assert {item["id"] for item in theirs.values()}.isdisjoint(
+        item["id"] for item in mine.values())
+    assert second.get("/governance/controls", framework_id=mine["nist_ai_rmf"]["id"]
+                      ).json()["total"] == 0
+    assert control not in [item["id"] for item in
+                           second.get("/governance/controls", limit=100).json()["items"]]
+    assert second.post(f"/governance/controls/{control}/assess", body, headers=other_holder
+                       ).status_code == 404
+    assert second.audit_events("governance.control_assessed") == []
+    assert first.audit_events("governance.control_assessed") == []
+
+    # The owning side is unchanged, and its own holder can still assess.
+    assert first.post(f"/governance/controls/{control}/assess", body, headers=holder
+                      ).status_code == 201
+    counts = second.get("/governance/frameworks").json()["items"]
+    assert all(item["status_counts"]["NOT_APPLICABLE"] == 0 for item in counts)
+
+
+def test_enforcement_mode_preflight_and_checks_belong_to_one_tenant(world, db):
+    first, second = world.tenant(), world.tenant()
+    first.allow_everything()
+    second.allow_everything()
+    mine = first.agent(tools=["calculate"])
+    theirs = second.agent(tools=["calculate"])
+    first.set_enforcement("enforce")
+
+    assert first.get("/governance/enforcement").json()["enforcement_mode"] == "enforce"
+    assert second.get("/governance/enforcement").json()["enforcement_mode"] == "observe"
+    params = {"operator": "add", "a": 1, "b": 2}
+    assert mine.act("calculate", params=params).json()["outcome"] == "DENY"
+    assert theirs.act("calculate", params=params).json()["outcome"] == "ALLOW"
+    assert second.audit_events("governance.enforcement_mode_changed") == []
+
+    listed = [item["asset_id"] for item in
+              second.get("/governance/enforcement/preflight").json()["items"]]
+    assert listed == [theirs.asset_id]
+    with db.tenant_transaction(second.id) as session:
+        rows = session.execute(text("SELECT asset_id FROM governance_gateway_checks")).all()
+    assert [str(row[0]) for row in rows] == [theirs.asset_id]

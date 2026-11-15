@@ -17,7 +17,7 @@ def _set_tenant(session: Session, tenant_id: UUID) -> None:
 
 
 def provision_tenant(owner_url: str, *, slug: str, name: str) -> UUID:
-    engine = create_engine(owner_url)
+    engine = create_engine(owner_url, hide_parameters=True)
     try:
         with Session(engine) as session, session.begin():
             tenant_id = uuid4()
@@ -41,7 +41,7 @@ def provision_tenant(owner_url: str, *, slug: str, name: str) -> UUID:
 
 
 def create_user(owner_url: str, tenant_id: UUID, *, email: str, password: str, role: str) -> UUID:
-    engine = create_engine(owner_url)
+    engine = create_engine(owner_url, hide_parameters=True)
     try:
         with Session(engine) as session, session.begin():
             _set_tenant(session, tenant_id)

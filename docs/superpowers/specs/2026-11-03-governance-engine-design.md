@@ -1,6 +1,17 @@
 # Governance Engine: Design
 
-**Status:** Awaiting review. **Phase:** 3. **Date:** 2026-11-03.
+**Status:** Built on `phase-3-governance`. **Phase:** 3. **Date:** 2026-11-03.
+
+> **Aligned with the code in Task 21 (2026-11-15).** These sections were changed to say what was
+> built and ruled, so the spec no longer differs from the code: 4 (`risk_methodology_events`
+> instead of an `approved_by` column; `frozen_hash`), 7.1 (which states allow assessment), 7.4
+> (review statuses, `frozen_hash` in the `SUBMIT` payload, resubmission, approval while information
+> is requested), 10 (library statuses, the partial NIST library, how ISO could be loaded), 11.2
+> (an evaluation error on a blocked asset in `observe`), 11.4 (`FOR NO KEY UPDATE`), 12
+> (`409 ENFORCEMENT_MODE_UNCHANGED`), 13 (the review date as a trigger), 15 (the browser workflow
+> file), and 17 (limits found while building). Sections 7.1, 7.4 and 13 also carry inline markers.
+> Every deviation ruled during the build is listed in `docs/DECISIONS.md` under "Governance build
+> rulings".
 
 ## 1. Goal
 
@@ -85,12 +96,13 @@ rules are.
 | `governance_role_grants` | `user_id`, `role`, `granted_by`, `granted_at`, `revoked_by`, `revoked_at` | `SELECT, INSERT`, `UPDATE (revoked_by, revoked_at)` |
 | `asset_profile_versions` | `asset_id`, `version`, `profile_canonical`, `content_hash`, `business_owner_id`, `technical_owner_id`, `created_by` | `SELECT, INSERT` |
 | `asset_governance_state` | Primary key `(tenant_id, asset_id)`. `status`, `version`, `current_profile_version_id`, `latest_assessment_id`, `current_decision_id`, `hard_block_decision_id`, `valid_until`, `next_review_at`, `updated_at` | `SELECT, INSERT`, `UPDATE` on those columns |
-| `risk_methodology_versions` | `version`, `document_canonical`, `content_hash`, `created_by`, `approved_by` | `SELECT, INSERT` |
+| `risk_methodology_versions` | `version`, `document_canonical`, `content_hash`, `created_by` | `SELECT, INSERT` |
+| `risk_methodology_events` | `version_id`, `event` (`APPROVED`, `ACTIVATED`), `actor_id`, `audit_event_id`. Replaces an `approved_by` column: an append-only row cannot gain an approver after insert | `SELECT, INSERT` |
 | `risk_assessments` | `asset_id`, `profile_version_id`, `methodology_version_id`, `input_canonical`, `input_hash`, `result_canonical`, `status`, `score`, `risk_level`, `assessed_by`, `audit_event_id` | `SELECT, INSERT` |
 | `governance_policies` | `name`, `category` | `SELECT, INSERT` |
 | `governance_policy_versions` | `policy_id`, `version`, `document_canonical`, `content_hash`, `effective_from`, `review_by`, `created_by` | `SELECT, INSERT` |
 | `governance_policy_events` | `policy_version_id`, `event` (`APPROVED`, `ACTIVATED`, `DEACTIVATED`), `actor_id`, `audit_event_id` | `SELECT, INSERT` |
-| `governance_reviews` | `asset_id`, `assessment_id`, `profile_version_id`, `submitted_by`, `assigned_reviewer`, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `status`, `version`, `submitted_at`, `closed_at` | `SELECT, INSERT`, `UPDATE (assigned_reviewer, status, version, closed_at)` |
+| `governance_reviews` | `asset_id`, `assessment_id`, `profile_version_id`, `submitted_by`, `assigned_reviewer`, `required_controls_canonical`, `findings_canonical`, `required_approvers`, `frozen_hash`, `status`, `version`, `submitted_at`, `closed_at` | `SELECT, INSERT`, `UPDATE (assigned_reviewer, status, version, closed_at)` |
 | `governance_decisions` | Section 7.3 | `SELECT, INSERT` |
 | `governance_decision_policy_versions` | Decision to policy version | `SELECT, INSERT` |
 | `governance_decision_evidence` | Decision to evidence | `SELECT, INSERT` |
@@ -100,6 +112,7 @@ rules are.
 | `governance_frameworks` | `key`, `version`, `source_url`, `source_document`, `library_status` | `SELECT, INSERT` |
 | `governance_controls` | `framework_id`, `control_identifier`, `name`, `description`, `source_reference`, `required_evidence`, `policy_id` | `SELECT, INSERT` |
 | `governance_control_assessments` | `control_id`, `status`, `note`, `assessed_by`, `audit_event_id` | `SELECT, INSERT` |
+| `governance_control_assessment_evidence` | The evidence a control assessment cites, which must be linked to the same control | `SELECT, INSERT` |
 | `governance_gateway_checks` | `decision_id`, `request_id`, `agent_id`, `asset_id`, `mode`, `observed_status`, `verdict`, `reason_code`, `governance_decision_id`, `checked_at` | `SELECT, INSERT` |
 
 Append-only tables get the `aegis_reject_mutation` row and truncate triggers. The grants test and
@@ -205,7 +218,10 @@ makes the asset and tenant columns immutable, requires `version` to increase by 
 `DELETE`. All transitions run under `SELECT ... FOR UPDATE` with optimistic version checks where a
 client supplies a version.
 
-Saving the first profile inserts the state row as `DRAFT`. The first assessment moves it to
+*(Changed during the build: the spec named no owner for assessment's transitions, ruling R4,
+Task 6.)* Saving the first profile inserts the state row as `DRAFT`. Assessment is allowed in every state but
+`RETIRED`; from `DRAFT` or `REJECTED` it moves the asset to `ASSESSMENT_REQUIRED`, and elsewhere it
+leaves the status and the hard block unchanged. So the first assessment moves it to
 `ASSESSMENT_REQUIRED`, meaning a complete assessment of the current profile is needed before
 submission. Submission requires exactly that, and otherwise fails with `ASSESSMENT_NOT_CURRENT`.
 Saving a new profile version while approved or conditionally approved moves the asset to
@@ -243,13 +259,25 @@ version and evidence references go in the two join tables. The system actor is a
 
 ### 7.4 Reviews
 
-One open review per asset, by a partial unique index on status `OPEN` or `INFO_REQUESTED`. This is
-the duplicate-submission guard. `REQUEST_INFORMATION` sets the review to `INFO_REQUESTED`, leaves the
-asset `UNDER_REVIEW`, and the submitter responds by adding evidence or resubmitting a newer
-assessment, which returns the review to `OPEN`.
+*(Changed during the build: closed-review statuses and resubmission were unnamed, and the audit
+anchor was added after review, rulings R6, R7 and the Task 8 amendment to ruling 10, Task 8; approval
+while information is requested, Task 9 ruling.)* Review statuses are `OPEN`, `INFO_REQUESTED`, `DECIDED`, and `WITHDRAWN`. One open review per asset,
+by a partial unique index on status `OPEN` or `INFO_REQUESTED`. This is the duplicate-submission
+guard. `REQUEST_INFORMATION` sets the review to `INFO_REQUESTED` and leaves the asset
+`UNDER_REVIEW`. The submitter responds by adding evidence and then submitting again: a submission
+while the review is `INFO_REQUESTED` withdraws that review and opens a new one, recomputing the
+frozen values, keeping the assigned reviewer and the `UNDER_REVIEW` status, and recording a
+`SUBMIT` decision. Earlier votes do not carry over, and the assessment must still be current. While
+information is requested, a reviewer may reject but not approve (`409 REVIEW_AWAITING_INFORMATION`).
+Suspend, revoke, and retire close an open review as `WITHDRAWN`.
 
 At submission the policy engine computes the required controls and required approver count, and they
-are frozen on the review, so a policy change mid-review cannot silently change what was asked.
+are frozen on the review, so a policy change mid-review cannot silently change what was asked. The
+whole policy outcome is frozen, including the applicable version IDs and the self- and
+owner-approval permissions. `frozen_hash` covers the review's identity and frozen text; it is
+written into the `SUBMIT` decision's audit payload, and a review read for a decision is compared
+with that event, so an edit followed by a recomputed hash is still detected. The `ASSIGN_REVIEWER`
+payload carries the `reviewer_id`.
 
 `minimum_approvers` (1 or 2, from applicable policies, highest wins, default 1) is implemented with
 `APPROVAL_VOTE`. A partial unique index on `(tenant_id, review_id, decided_by)` for vote and approval
@@ -332,11 +360,17 @@ page or section of the source it was checked against. A test asserts that every 
 appears in a checked-in list taken from that source.
 
 - **NIST AI RMF 1.0 (NIST AI 100-1):** public. Identifiers are verified against the published PDF
-  during Milestone 6, and only those verified ship.
+  during Milestone 6, and only those verified ship. As built, 19 of the source's 72 subcategories
+  ship, and the framework record says `LOADED_PARTIAL` with `source_control_count` 72.
 - **ISO/IEC 42001:2023:** the framework record is created with `library_status = NOT_LOADED` and
   **no controls**, because the Annex A identifiers could not be verified against an authoritative
   source. The dashboard states this. Loading it later means adding a framework module from a licensed
-  copy, using identifiers and AEGIS-written descriptions rather than ISO's text.
+  copy, using identifiers and AEGIS-written descriptions rather than ISO's text. Libraries are
+  seeded once per framework row, so for tenants that already exist it also needs a new migration
+  that seeds the controls.
+
+`library_status` is `NOT_LOADED`, `LOADED_PARTIAL`, or `LOADED`, so a partial library never reads as
+complete.
 
 Control status is a human assessment, append-only, at tenant level. With no row the status is
 `NOT_ASSESSED`. `IMPLEMENTED` and `PARTIALLY_IMPLEMENTED` are refused unless the control has at least
@@ -390,7 +424,10 @@ already approved, as disabling an agent does today.
 
 **Failures.** An exception in the check yields a deny in `enforce` with
 `GOVERNANCE_EVALUATION_ERROR`. In `observe` it is recorded and does not block, because `observe`
-exists to guarantee no new outage. A database failure aborts the transaction and returns 503 in both
+exists to guarantee no new outage. In both modes, rows 1 and 2 are read from the state row alone
+when the check fails, so a retired or hard-blocked asset is still denied with `GOVERNANCE_RETIRED`
+or `GOVERNANCE_BLOCKED`, since a person's decision applies in both modes (changed in the Task 21
+audit). A database failure aborts the transaction and returns 503 in both
 modes, as it does today.
 
 ### 11.3 Conditions
@@ -401,10 +438,15 @@ shown to people, and is labeled as not enforced by the gateway.
 
 ### 11.4 Concurrency
 
-The gateway already takes a share lock on the agent row. Suspend, revoke, and reject take
-`FOR UPDATE` on all the asset's agent rows, in ID order, before changing state. This serializes them
-against in-flight evaluations even for an asset with no state row, which a lock on the state row
-could not do. The order is agent rows, then state, then the chain head, matching existing code.
+The gateway already takes a share lock on the agent row. Suspend, revoke, and reject (and the other
+writes that change what an assessment describes) take `FOR NO KEY UPDATE` on all the asset's agent
+rows, in ID order, before changing state. This serializes them against in-flight evaluations even
+for an asset with no state row, which a lock on the state row could not do. The order is agent
+rows, then state, then the chain head, matching existing code. `FOR NO KEY UPDATE` rather than
+`FOR UPDATE`, because `FOR UPDATE` also conflicts with the key share lock a foreign key check takes:
+a finishing execution holds the chain head and needs that lock on the agent row for its security
+event, which deadlocked against a suspension. `FOR NO KEY UPDATE` still conflicts with the
+gateway's share lock.
 
 A mode switch is not serialized against in-flight evaluations. One in-flight action may use the old
 mode, the same accepted behavior as policy activation.
@@ -481,7 +523,7 @@ POST  /controls/{id}/assess
 GET   /reviews/due
 GET   /enforcement
 GET   /enforcement/preflight
-POST  /enforcement
+POST  /enforcement                              409 ENFORCEMENT_MODE_UNCHANGED if already set
 GET   /people                                   id and email, admin and reviewer only, for pickers
 POST  /role-grants
 POST  /role-grants/{id}/revoke
@@ -491,7 +533,10 @@ POST  /role-grants/{id}/revoke
 
 `worker.py` follows `CorrelationWorker`: a polling thread, disabled in tests, with settings
 `governance_worker_enabled` and `governance_review_poll_seconds`. For each due asset it records a
-system `REQUIRE_REASSESSMENT` decision through the normal lifecycle, one asset per transaction.
+system `REQUIRE_REASSESSMENT` decision through the normal lifecycle, one asset per transaction. *(Changed during
+the build: the review date as a trigger was made explicit, Task 15 ruling.)* An approved asset is due when `valid_until` or `next_review_at` has passed. A passed review date can
+therefore turn a pass into a hold in `enforce`, exactly as a person's `/reassess` does; expiry
+itself is computed by the gateway, so the worker never changes that verdict.
 
 To find tenants with no tenant context it needs one new ID-only function,
 `aegis_tenants_with_due_governance_reviews(p_now timestamptz)`, with a matching owner policy limited
@@ -540,7 +585,7 @@ Tests are written first, per milestone, against real PostgreSQL as `aegis_app`.
 | Review scheduling | `security/test_governance_reviews.py` |
 | Concurrent transitions | `test_concurrent_*` with real threads, in the approval and gateway files |
 | Failure recovery | Rollback on audit failure, worker failure, evaluation error, in the same files |
-| Full workflow | `security/test_governance_workflow.py`, `frontend/e2e/governance.spec.ts` |
+| Full workflow | `security/test_governance_workflow.py`, `frontend/e2e/governance-workflow.spec.ts` (built in its own file instead of `governance.spec.ts`, ledger ruling, Task 20) |
 
 Specific tests this design needs:
 
@@ -595,6 +640,13 @@ To be stated in the product and documentation, not left implicit.
 - **ADV4 and ADV5 limits carry over.** Someone with database control can forge these records as they
   can any other (T11, T15).
 - **Default weights are judgment**, not calibrated against real outcomes.
+- **Found while building** (full list in `docs/THREAT_MODEL.md`, "Governance known limits"):
+  external documents over 16,000 bytes can only be attested; a verification by a reviewer whose
+  grant is later revoked still counts; an expired but unprocessed approval is handled by the
+  gateway and the worker only aligns the status; the review date also triggers reassessment; most
+  policy controls are shown, not enforced (`reassessment_interval_days` does not bound approval
+  dates); ISO/IEC 42001 can reach existing tenants only through a new migration; and the dashboard
+  has no controls for adding evidence, suspending, revoking, retiring, or requesting reassessment.
 
 ## 18. Out of scope
 

@@ -34,6 +34,7 @@ from aegis.governance.approvals import (
 )
 from aegis.governance.policies import PolicyIntegrityError
 from aegis.governance.risk import MethodologyIntegrityError
+from aegis.governance.worker import GovernanceReviewWorker
 from aegis.llm.factory import build_llm_provider
 from aegis.logging_config import configure_logging
 from aegis.security.access_events import record_access_failure
@@ -194,15 +195,20 @@ def create_app(settings: Settings | None = None, *, tools: ToolRegistry | None =
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         assert_runtime_role_is_restricted(db)
-        worker = None
+        workers: list[CorrelationWorker | GovernanceReviewWorker] = []
+        # Read the clock through the container, so a test can move it.
         if settings.correlation_worker_enabled:
-            # Read the clock through the container, so a test can move it.
-            worker = CorrelationWorker(
+            workers.append(CorrelationWorker(
                 db, lambda: container.clock(), settings.correlation_poll_seconds
-            )
+            ))
+        if settings.governance_worker_enabled:
+            workers.append(GovernanceReviewWorker(
+                db, lambda: container.clock(), settings.governance_review_poll_seconds
+            ))
+        for worker in workers:
             worker.start()
         yield
-        if worker is not None:
+        for worker in workers:
             worker.stop()
         db.dispose()
 

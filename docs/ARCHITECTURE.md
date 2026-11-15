@@ -20,6 +20,7 @@ deployable yet (see `DECISIONS.md` D-001).
  |                  2 validate request    (strict schemas)      |
  |                  3 load facts          (RLS-scoped queries)  |
  |                  4 policy engine       (pure function)       |
+ |                  4b governance check   (pure; only tightens) |
  |                  5 persist decision + audit, same txn        |
  |                  6 claim execution     (unique constraint)   |
  |                  7 tool executor       (only call site)      |
@@ -27,8 +28,10 @@ deployable yet (see `DECISIONS.md` D-001).
  |                                                              |
  |  /approvals -> state machine, row locks, action-hash binding |
  |  /registry, /policies, /audit, /events: control plane        |
+ |  /governance -> profiles, risk, policies, reviews, evidence, |
+ |                 frameworks, enforcement mode                 |
  +--------------------------------------------------------------+
-      |  background worker: correlates events into incidents after commit
+      |  background workers: correlate events into incidents; sweep due governance reviews
       | connects as aegis_app (NOSUPERUSER, NOBYPASSRLS)
       v
  PostgreSQL: RLS on every tenant table, composite tenant FKs,
@@ -51,6 +54,8 @@ deployable yet (see `DECISIONS.md` D-001).
 | `aegis.incidents` | The state machine and authorized transitions | Be reachable by agents or by the LLM layer |
 | `aegis.investigation` | Timelines, evidence checks, deterministic findings | Change an incident, or store an uncited fact |
 | `aegis.llm` | Turn text into text through a provider | Touch the database or any service |
+| `aegis.governance.engine` | Pure risk, policy, lifecycle, and enforcement logic | Perform I/O, read the clock, or call an LLM |
+| `aegis.governance` | Profiles, assessments, governance policies, reviews and decisions, evidence, frameworks, the gateway facts loader, and the review worker | Import `aegis.registry.service` or `aegis.gateway.service`; loosen a gateway outcome |
 | `aegis.api` | HTTP, schemas, error mapping | Contain policy logic |
 
 ## Trust boundaries
@@ -99,6 +104,28 @@ agent POST /gateway/actions/{id}/execute ->
 Re-evaluation at execution closes the time-of-check/time-of-use gap: disabling the
 agent or removing a grant after approval cancels the action.
 
+### Governance (Phase 3)
+
+```
+txn 1 (as above): ... evaluate policy -> governance facts read in the same txn
+     -> verdict = check(facts, action) -> outcome = combine(policy, verdict)
+     -> insert decision + governance_gateway_checks row + audit -> ...
+```
+
+The check runs after the policy evaluation, and again at re-evaluation in an approved execution.
+It can turn an allow into a hold or a deny, and a hold into a deny, and nothing else. A hard-check
+or policy deny keeps its own reason code. The order of its rows, and what `observe` records instead
+of enforcing, is spec 11.2 (`docs/superpowers/specs/2026-11-03-governance-engine-design.md`).
+
+Lifecycle changes (suspend, revoke, reject, approve, submit, assess, profile save, grant changes) lock the
+asset's agent rows `FOR NO KEY UPDATE` in ID order, then the state row, then the chain head. The
+gateway's share lock on the agent row conflicts with that, so a suspension either precedes an
+evaluation entirely or follows it (`DECISIONS.md` D-030).
+
+The review worker follows the correlation worker: a polling thread, one asset per transaction,
+finding tenants through `aegis_tenants_with_due_governance_reviews`. Expiry does not depend on it,
+because the gateway compares `valid_until` with its own clock.
+
 ## Failure behavior
 
 | Failure | Behavior |
@@ -111,6 +138,9 @@ agent or removing a grant after approval cancels the action.
 | Tool raises | `execution=FAILED`, audited; the error detail is not returned to the caller |
 | Outcome write fails after the tool ran | Execution remains `STARTED`; logged; visible as unresolved |
 | Tenant context missing | RLS returns zero rows, writes are rejected |
+| Governance check raises | A retired or hard-blocked asset is denied in both modes with `GOVERNANCE_RETIRED` or `GOVERNANCE_BLOCKED`. Any other asset: `enforce` denies with `GOVERNANCE_EVALUATION_ERROR`; `observe` records that code and does not block |
+| Governance record fails its hash | Conditions: deny in both modes. Policies, methodologies, profiles, assessments, reviews: 503 |
+| Review worker fails | Logged and retried; the gateway is unaffected |
 | API started with a superuser, `BYPASSRLS`, or table-owning role | The process refuses to start |
 
 ## Tenant isolation

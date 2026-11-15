@@ -1,11 +1,13 @@
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, StringConstraints, model_validator
+from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
-from aegis.api.schemas import In, Out
+from aegis.api.schemas import In, Out, Page
+from aegis.governance.conditions import Conditions
 from aegis.governance.engine.risk import Methodology
+from aegis.governance.evidence import Category, EvidenceSource
 from aegis.governance.policy_schema import (
     GovernancePolicyDocument,
     PolicyCategory,
@@ -96,6 +98,17 @@ class OverviewOut(Out):
     evidence_verified: int
     evidence_total: int
     enforcement_mode: str
+
+
+class DueReviewOut(Out):
+    asset_id: UUID
+    name: str
+    governance_status: str
+    next_review_at: datetime
+    valid_until: datetime | None
+    # The review date has passed. A due review stays listed until a new approval sets the next.
+    overdue: bool
+    expired: bool
 
 
 class AssessmentSummaryOut(Out):
@@ -222,3 +235,243 @@ class ReviewOut(Out):
     # What the policy engine asked for when the review was opened, frozen at that moment.
     required_controls: dict[str, Any]
     findings: list[dict[str, Any]]
+
+
+class ApproveIn(In):
+    reason: Reason
+    # Both must carry a time zone, because a date with no zone has no single meaning.
+    valid_until: AwareDatetime
+    next_review_at: AwareDatetime
+    # Optional conditions make the approval conditional.
+    conditions: Conditions | None = None
+    # Each must be this tenant's evidence for the review's asset.
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class RejectIn(In):
+    reason: Reason
+
+
+class DecisionOut(Out):
+    id: UUID
+    asset_id: UUID
+    review_id: UUID
+    kind: str
+    from_status: str
+    to_status: str
+    decided_by: UUID
+    decided_at: datetime
+    reason: str
+    assessment_id: UUID
+    conditions: dict[str, Any] | None
+    conditions_hash: str | None
+    valid_until: datetime | None
+    next_review_at: datetime | None
+    audit_event_id: UUID
+    policy_version_ids: list[UUID]
+    evidence_ids: list[UUID]
+    # Where the review and the asset stand after this decision. A vote leaves both open.
+    review_status: str
+    governance_status: str
+
+
+class LifecycleIn(In):
+    reason: Reason
+
+
+class AssetDecisionOut(Out):
+    """A decision on an asset, whether or not a review produced it."""
+
+    id: UUID
+    asset_id: UUID
+    review_id: UUID | None
+    kind: str
+    from_status: str
+    to_status: str
+    actor_type: str
+    # Null only when the system made the decision.
+    decided_by: UUID | None
+    decided_at: datetime
+    reason: str
+    assessment_id: UUID | None
+    conditions: dict[str, Any] | None
+    conditions_hash: str | None
+    valid_until: datetime | None
+    next_review_at: datetime | None
+    audit_event_id: UUID
+    policy_version_ids: list[UUID]
+    evidence_ids: list[UUID]
+
+
+class LifecycleDecisionOut(AssetDecisionOut):
+    governance_status: str
+
+
+class ProfileVersionSummaryOut(Out):
+    id: UUID
+    version: int
+    content_hash: str
+    created_by: UUID
+    created_at: datetime
+
+
+class HistoryEntryOut(Out):
+    """One record of an asset's history. Exactly one of the three bodies is set, by `type`."""
+
+    type: Literal["decision", "assessment", "profile_version"]
+    # The audit sequence of the event that records this entry, which is what orders the history.
+    seq: int
+    id: UUID
+    audit_event_id: UUID
+    # The decision kind, for a decision.
+    kind: str | None
+    decision: AssetDecisionOut | None
+    assessment: AssessmentSummaryOut | None
+    profile_version: ProfileVersionSummaryOut | None
+
+
+class EvidenceIn(In):
+    asset_id: UUID
+    category: Category
+    description: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=2000)]
+    source: EvidenceSource
+    # Controls of this tenant's framework library.
+    control_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class EvidenceVerifyIn(In):
+    outcome: Literal["VERIFIED", "REJECTED"]
+    method: Literal["internal_record_checked", "content_recomputed", "manual_attestation"]
+    note: Reason
+    # The content to compare with an external reference's declared hash.
+    content: Annotated[str, StringConstraints(strict=True, min_length=1)] | None = None
+
+
+class EvidenceVerificationOut(Out):
+    id: UUID
+    evidence_id: UUID
+    outcome: str
+    method: str
+    note: str
+    verified_by: UUID
+    verified_at: datetime
+    audit_event_id: UUID
+    # What this verification can have proved: hash_recomputed, record_verified, existence_only,
+    # or attestation_only.
+    scope: str
+
+
+class EvidenceOut(Out):
+    id: UUID
+    asset_id: UUID
+    category: str
+    description: str
+    source_type: str
+    submitted_by: UUID
+    created_at: datetime
+    content_sha256: str | None
+    source_uri: str | None
+    # The kind and id of an internal record.
+    record_type: str | None
+    record_id: UUID | None
+    # Inline text, for admins and reviewers only.
+    content_text: str | None
+    control_ids: list[UUID]
+    current_verification: str
+    latest_verification: EvidenceVerificationOut | None
+
+
+class EvidenceDetailOut(EvidenceOut):
+    verifications: list[EvidenceVerificationOut]
+
+
+# Compliance. Every response carries the statement that a mapping is not a certification.
+
+
+class CompliancePage[T](Page[T]):
+    statement: str
+
+
+class FrameworkOut(Out):
+    id: UUID
+    key: str
+    version: str
+    name: str
+    source_url: str | None
+    source_document: str
+    # NOT_LOADED, LOADED_PARTIAL, or LOADED.
+    library_status: str
+    # Controls stored for this tenant, against the identifiers the source defines (null when
+    # none were verified).
+    control_count: int
+    source_control_count: int | None
+    coverage: str
+    status_counts: dict[str, int]
+
+
+class ControlAssessmentSummaryOut(Out):
+    id: UUID
+    status: str
+    note: str
+    assessed_by: UUID
+    assessed_at: datetime
+    audit_event_id: UUID
+    evidence_ids: list[UUID]
+
+
+class ControlOut(Out):
+    id: UUID
+    framework_id: UUID
+    framework_key: str
+    identifier: str
+    name: str
+    description: str
+    source_reference: str
+    required_evidence: list[str]
+    # NOT_ASSESSED with no assessment; EVIDENCE_REQUIRED when the latest assessment claims
+    # implementation but no linked evidence is currently verified; otherwise the assessed status.
+    current_status: str
+    latest_assessment: ControlAssessmentSummaryOut | None
+    verified_evidence_count: int
+    linked_evidence_count: int
+
+
+class ControlAssessIn(In):
+    status: Literal["IMPLEMENTED", "PARTIALLY_IMPLEMENTED", "NOT_IMPLEMENTED", "NOT_APPLICABLE"]
+    note: Reason
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class ControlAssessmentOut(ControlAssessmentSummaryOut):
+    control_id: UUID
+    current_status: str
+    statement: str
+
+
+class EnforcementIn(In):
+    mode: Literal["observe", "enforce"]
+    reason: Reason
+
+
+class EnforcementOut(Out):
+    enforcement_mode: str
+
+
+class PreflightItemOut(Out):
+    asset_id: UUID
+    name: str
+    governance_status: str | None
+    # What enforce mode would do to any action of this asset's agents.
+    verdict: Literal["DENY", "HOLD"]
+    reason_code: str
+    recent_actions: int
+    recent_not_passed: int
+
+
+class PreflightOut(Out):
+    enforcement_mode: str
+    since: datetime
+    assets_checked: int
+    would_deny: int
+    would_hold: int
+    items: list[PreflightItemOut]

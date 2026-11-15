@@ -290,6 +290,14 @@ EXPECTED_TABLE_PRIVILEGES = {
     "governance_decisions": {"SELECT", "INSERT"},
     "governance_decision_policy_versions": {"SELECT", "INSERT"},
     "governance_decision_evidence": {"SELECT", "INSERT"},
+    "governance_evidence": {"SELECT", "INSERT"},
+    "governance_evidence_controls": {"SELECT", "INSERT"},
+    "governance_evidence_verifications": {"SELECT", "INSERT"},
+    "governance_frameworks": {"SELECT", "INSERT"},
+    "governance_controls": {"SELECT", "INSERT"},
+    "governance_control_assessments": {"SELECT", "INSERT"},
+    "governance_control_assessment_evidence": {"SELECT", "INSERT"},
+    "governance_gateway_checks": {"SELECT", "INSERT"},
 }
 
 EXPECTED_COLUMN_UPDATES = {
@@ -370,5 +378,6 @@ def test_only_the_id_lookups_are_security_definer(attacker_sql):
     ).fetchall()
     assert sorted(row[0] for row in rows) == [
         "aegis_resolve_tenant",
+        "aegis_tenants_with_due_governance_reviews",
         "aegis_tenants_with_pending_events",
     ]

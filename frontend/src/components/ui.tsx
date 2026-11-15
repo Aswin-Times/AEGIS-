@@ -1,12 +1,19 @@
 import {
   AlertTriangle,
+  Archive,
   Ban,
   CheckCircle2,
   Circle,
+  ClipboardCheck,
   Clock,
+  FileQuestion,
   FlaskConical,
+  PauseCircle,
+  RefreshCw,
   type LucideIcon,
   Search,
+  ShieldAlert,
+  ShieldOff,
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
@@ -48,6 +55,38 @@ const STATUS: Record<string, { tone: Tone; icon: LucideIcon; label: string }> = 
   allow: { tone: "allow", icon: CheckCircle2, label: "Allow" },
   deny: { tone: "deny", icon: Ban, label: "Deny" },
   require_approval: { tone: "hold", icon: Clock, label: "Require approval" },
+  // Governance lifecycle statuses.
+  DRAFT: { tone: "neutral", icon: Circle, label: "Draft" },
+  ASSESSMENT_REQUIRED: { tone: "hold", icon: ClipboardCheck, label: "Assessment required" },
+  UNDER_REVIEW: { tone: "hold", icon: Clock, label: "Under review" },
+  CONDITIONALLY_APPROVED: { tone: "hold", icon: CheckCircle2, label: "Conditionally approved" },
+  SUSPENDED: { tone: "deny", icon: PauseCircle, label: "Suspended" },
+  REASSESSMENT_REQUIRED: { tone: "hold", icon: RefreshCw, label: "Reassessment required" },
+  RETIRED: { tone: "neutral", icon: Archive, label: "Retired" },
+  // Assessed risk levels. They are the engine's output, unlike the declared lowercase ones above.
+  LOW: { tone: "neutral", icon: Circle, label: "Low" },
+  MEDIUM: { tone: "hold", icon: AlertTriangle, label: "Medium" },
+  HIGH: { tone: "deny", icon: AlertTriangle, label: "High" },
+  CRITICAL: { tone: "deny", icon: ShieldAlert, label: "Critical" },
+  COMPLETE: { tone: "allow", icon: CheckCircle2, label: "Complete" },
+  INCOMPLETE: { tone: "hold", icon: FileQuestion, label: "Incomplete" },
+  VERIFIED: { tone: "allow", icon: CheckCircle2, label: "Verified" },
+  UNVERIFIED: { tone: "neutral", icon: Circle, label: "Unverified" },
+  // Review statuses. A review is OPEN until a decision closes it, so it is not an alarm.
+  AWAITING_DECISION: { tone: "hold", icon: Clock, label: "Awaiting decision" },
+  INFO_REQUESTED: { tone: "hold", icon: FileQuestion, label: "Information requested" },
+  DECIDED: { tone: "neutral", icon: CheckCircle2, label: "Decided" },
+  WITHDRAWN: { tone: "neutral", icon: XCircle, label: "Withdrawn" },
+  // A policy version that is approved but not in force. The API does not say whether it was
+  // never activated or was deactivated.
+  APPROVED_NOT_ACTIVE: { tone: "neutral", icon: CheckCircle2, label: "Approved, not active" },
+  // Control statuses.
+  IMPLEMENTED: { tone: "allow", icon: CheckCircle2, label: "Implemented" },
+  PARTIALLY_IMPLEMENTED: { tone: "hold", icon: AlertTriangle, label: "Partially implemented" },
+  NOT_IMPLEMENTED: { tone: "deny", icon: XCircle, label: "Not implemented" },
+  NOT_APPLICABLE: { tone: "neutral", icon: Circle, label: "Not applicable" },
+  NOT_ASSESSED: { tone: "neutral", icon: Circle, label: "Not assessed" },
+  EVIDENCE_REQUIRED: { tone: "hold", icon: FileQuestion, label: "Evidence required" },
 };
 
 /** Status always pairs color with an icon and a word, so it never depends on color alone. */
@@ -60,6 +99,26 @@ export function StatusBadge({ value }: { value: string }) {
     >
       <Icon aria-hidden size={12} />
       {status.label}
+    </span>
+  );
+}
+
+/** An asset with no governance state is unreviewed. It must never read as approved or as low risk. */
+export function NotGovernedBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-line px-1.5 py-0.5 text-xs text-muted">
+      <ShieldOff aria-hidden size={12} />
+      Not governed
+    </span>
+  );
+}
+
+/** Declared risk is the registrant's claim. Assessed risk is the engine's result. Never interchangeable. */
+export function RiskLabel({ kind, value }: { kind: "declared" | "assessed"; value: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span className="text-xs text-muted">{kind === "declared" ? "Declared" : "Assessed"}</span>
+      <StatusBadge value={value} />
     </span>
   );
 }
@@ -189,12 +248,22 @@ export function FilterLinks({
   name,
   current,
   options,
+  params = {},
 }: {
   basePath: string;
   name: string;
   current: string | undefined;
   options: { value: string | undefined; label: string }[];
+  // Other query values to keep when the filter changes.
+  params?: Record<string, string | undefined>;
 }) {
+  const href = (value: string | undefined) => {
+    const search = new URLSearchParams();
+    for (const [key, kept] of Object.entries(params)) if (kept) search.set(key, kept);
+    if (value) search.set(name, value);
+    const text = search.toString();
+    return text ? `${basePath}?${text}` : basePath;
+  };
   return (
     <nav aria-label="Filter" className="mb-3 flex flex-wrap gap-1">
       {options.map((option) => {
@@ -202,7 +271,7 @@ export function FilterLinks({
         return (
           <Link
             key={option.label}
-            href={option.value ? `${basePath}?${name}=${option.value}` : basePath}
+            href={href(option.value)}
             aria-current={active ? "true" : undefined}
             className={`rounded border px-2 py-1 text-xs ${
               active

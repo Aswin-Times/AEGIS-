@@ -10,6 +10,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    // For a malformed request, the locations of the fields the API rejected.
+    readonly fields: string[] = [],
   ) {
     super(message);
   }
@@ -46,6 +48,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
       response.status,
       payload?.error?.code ?? "UNKNOWN_ERROR",
       payload?.error?.message ?? "The request could not be completed.",
+      Array.isArray(payload?.error?.fields) ? payload.error.fields.map(String) : [],
     );
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);

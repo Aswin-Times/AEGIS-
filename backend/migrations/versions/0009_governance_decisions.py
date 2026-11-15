@@ -195,7 +195,7 @@ STATEMENTS = [
             REFERENCES governance_policy_versions (tenant_id, id)
     )
     """,
-    # The evidence table arrives in a later migration, which adds its foreign key.
+    # Migration 0011 adds the foreign key to the evidence table, once that table exists.
     """
     CREATE TABLE governance_decision_evidence (
         id uuid PRIMARY KEY,

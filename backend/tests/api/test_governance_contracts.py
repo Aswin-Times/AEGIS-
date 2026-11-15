@@ -236,3 +236,4 @@ def test_detail_refuses_agents_and_allows_viewers(tenant):
     assert tenant.get(path, headers=tenant.login("viewer")).status_code == 200
     agent = tenant.agent()
     assert tenant.client.get(f"/api/v1{path}", headers=agent.headers).status_code == 401
+
