@@ -157,6 +157,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
         {admin && people ? (
           <ProfileForm
             assetId={asset.id}
+            versionId={asset.profile?.id ?? null}
             profile={asset.profile?.profile ?? {}}
             people={people.items}
           />

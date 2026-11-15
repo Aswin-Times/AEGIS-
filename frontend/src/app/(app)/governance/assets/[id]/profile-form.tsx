@@ -122,10 +122,14 @@ type ListField = "external_integrations" | "declared_tool_access" | "evidence_re
 
 export function ProfileForm({
   assetId,
+  versionId,
   profile,
   people,
 }: {
   assetId: string;
+  // The stored version the fields start from. A new one remounts them, because React resets a
+  // form after its action, and a select would otherwise fall back to "Not stated".
+  versionId: string | null;
   profile: AssetProfile;
   people: Person[];
 }) {
@@ -151,77 +155,79 @@ export function ProfileForm({
   return (
     <form action={action} aria-label="Edit profile" className="grid gap-3 p-3 md:grid-cols-2">
       <input type="hidden" name="asset_id" value={assetId} />
-      <Select label="Asset type" name="asset_type" value={text("asset_type")}
-        options={vocabulary(ASSET_TYPES)} error={errors.asset_type} />
-      <Select label="Deployment environment" name="deployment_environment"
-        value={text("deployment_environment")} options={vocabulary(ENVIRONMENTS)}
-        error={errors.deployment_environment} />
-      <Select label="Business owner" name="business_owner_id" value={text("business_owner_id")}
-        options={owners} error={errors.business_owner_id} />
-      <Select label="Technical owner" name="technical_owner_id"
-        value={text("technical_owner_id")} options={owners} error={errors.technical_owner_id} />
-      <TextArea label="Description" name="description" value={text("description")}
-        error={errors.description} />
-      <TextArea label="Business purpose" name="business_purpose" value={text("business_purpose")}
-        error={errors.business_purpose} />
-      <TextArea label="Intended use" name="intended_use" value={text("intended_use")}
-        error={errors.intended_use} />
-      <TextArea label="Prohibited use" name="prohibited_use" value={text("prohibited_use")}
-        error={errors.prohibited_use} />
-      <Input label="Responsible team" name="responsible_team" value={text("responsible_team")}
-        error={errors.responsible_team} />
-      <Input label="Model provider" name="model_provider" value={text("model_provider")}
-        error={errors.model_provider} />
-      <Input label="Model name" name="model_name" value={text("model_name")}
-        error={errors.model_name} />
-      <Input label="Model version" name="model_version" value={text("model_version")}
-        error={errors.model_version} />
-      <fieldset
-        className="rounded border border-line p-2"
-        aria-describedby={errors.data_categories ? "data-categories-error" : undefined}
-      >
-        <legend className="px-1 text-sm font-medium">Data categories</legend>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {DATA_CATEGORIES.map((value) => (
-            <label key={value} className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                name="data_categories"
-                value={value}
-                defaultChecked={categories.includes(value)}
-              />
-              {humanize(value)}
-            </label>
-          ))}
-        </div>
-        {errors.data_categories && (
-          <p id="data-categories-error" className="mt-1 text-xs text-deny">
-            {errors.data_categories}
-          </p>
-        )}
-      </fieldset>
-      <Select label="External exposure" name="external_exposure"
-        value={text("external_exposure")} options={vocabulary(EXTERNAL_EXPOSURES)}
-        error={errors.external_exposure} />
-      <Select label="Autonomy level" name="autonomy_level" value={text("autonomy_level")}
-        options={vocabulary(AUTONOMY_LEVELS)} error={errors.autonomy_level} />
-      <Select label="Human oversight" name="human_oversight" value={text("human_oversight")}
-        options={vocabulary(HUMAN_OVERSIGHT)} error={errors.human_oversight} />
-      <Select label="Impact level" name="impact_level" value={text("impact_level")}
-        options={vocabulary(IMPACT_LEVELS)} error={errors.impact_level} />
-      <Select label="Third-party reliance" name="third_party_reliance"
-        value={text("third_party_reliance")} options={vocabulary(THIRD_PARTY_RELIANCE)}
-        error={errors.third_party_reliance} />
-      <TextArea label="External integrations" name="external_integrations"
-        value={list("external_integrations")} hint="One per line."
-        error={errors.external_integrations} />
-      <TextArea label="Declared tool access" name="declared_tool_access"
-        value={list("declared_tool_access")}
-        hint="One per line. Used only when the asset has no agents. An asset with agents is scored on their actual grants."
-        error={errors.declared_tool_access} />
-      <TextArea label="Evidence references" name="evidence_references"
-        value={list("evidence_references")} hint="One per line."
-        error={errors.evidence_references} />
+      <div key={versionId ?? "none"} className="contents">
+        <Select label="Asset type" name="asset_type" value={text("asset_type")}
+          options={vocabulary(ASSET_TYPES)} error={errors.asset_type} />
+        <Select label="Deployment environment" name="deployment_environment"
+          value={text("deployment_environment")} options={vocabulary(ENVIRONMENTS)}
+          error={errors.deployment_environment} />
+        <Select label="Business owner" name="business_owner_id" value={text("business_owner_id")}
+          options={owners} error={errors.business_owner_id} />
+        <Select label="Technical owner" name="technical_owner_id"
+          value={text("technical_owner_id")} options={owners} error={errors.technical_owner_id} />
+        <TextArea label="Description" name="description" value={text("description")}
+          error={errors.description} />
+        <TextArea label="Business purpose" name="business_purpose" value={text("business_purpose")}
+          error={errors.business_purpose} />
+        <TextArea label="Intended use" name="intended_use" value={text("intended_use")}
+          error={errors.intended_use} />
+        <TextArea label="Prohibited use" name="prohibited_use" value={text("prohibited_use")}
+          error={errors.prohibited_use} />
+        <Input label="Responsible team" name="responsible_team" value={text("responsible_team")}
+          error={errors.responsible_team} />
+        <Input label="Model provider" name="model_provider" value={text("model_provider")}
+          error={errors.model_provider} />
+        <Input label="Model name" name="model_name" value={text("model_name")}
+          error={errors.model_name} />
+        <Input label="Model version" name="model_version" value={text("model_version")}
+          error={errors.model_version} />
+        <fieldset
+          className="rounded border border-line p-2"
+          aria-describedby={errors.data_categories ? "data-categories-error" : undefined}
+        >
+          <legend className="px-1 text-sm font-medium">Data categories</legend>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {DATA_CATEGORIES.map((value) => (
+              <label key={value} className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  name="data_categories"
+                  value={value}
+                  defaultChecked={categories.includes(value)}
+                />
+                {humanize(value)}
+              </label>
+            ))}
+          </div>
+          {errors.data_categories && (
+            <p id="data-categories-error" className="mt-1 text-xs text-deny">
+              {errors.data_categories}
+            </p>
+          )}
+        </fieldset>
+        <Select label="External exposure" name="external_exposure"
+          value={text("external_exposure")} options={vocabulary(EXTERNAL_EXPOSURES)}
+          error={errors.external_exposure} />
+        <Select label="Autonomy level" name="autonomy_level" value={text("autonomy_level")}
+          options={vocabulary(AUTONOMY_LEVELS)} error={errors.autonomy_level} />
+        <Select label="Human oversight" name="human_oversight" value={text("human_oversight")}
+          options={vocabulary(HUMAN_OVERSIGHT)} error={errors.human_oversight} />
+        <Select label="Impact level" name="impact_level" value={text("impact_level")}
+          options={vocabulary(IMPACT_LEVELS)} error={errors.impact_level} />
+        <Select label="Third-party reliance" name="third_party_reliance"
+          value={text("third_party_reliance")} options={vocabulary(THIRD_PARTY_RELIANCE)}
+          error={errors.third_party_reliance} />
+        <TextArea label="External integrations" name="external_integrations"
+          value={list("external_integrations")} hint="One per line."
+          error={errors.external_integrations} />
+        <TextArea label="Declared tool access" name="declared_tool_access"
+          value={list("declared_tool_access")}
+          hint="One per line. Used only when the asset has no agents. An asset with agents is scored on their actual grants."
+          error={errors.declared_tool_access} />
+        <TextArea label="Evidence references" name="evidence_references"
+          value={list("evidence_references")} hint="One per line."
+          error={errors.evidence_references} />
+      </div>
 
       <div className="md:col-span-2">
         <p className="mb-2 text-xs text-muted">
