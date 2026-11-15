@@ -127,15 +127,22 @@ export function ProfileForm({
   people,
 }: {
   assetId: string;
-  // The stored version the fields start from. A new one remounts them, because React resets a
-  // form after its action, and a select would otherwise fall back to "Not stated".
+  // The stored version the fields start from when nothing was refused.
   versionId: string | null;
   profile: AssetProfile;
   people: Person[];
 }) {
-  const [state, action, pending] = useActionState<ProfileFormState, FormData>(saveProfile, {});
+  // React resets a form after its action, and an uncontrolled select or checkbox returns to the
+  // default it mounted with. So every result remounts the fields, which then start from what was
+  // submitted after a refusal, and from the stored profile otherwise.
+  const [state, action, pending] = useActionState<ProfileFormState & { attempt?: number }, FormData>(
+    async (previous, data) => ({
+      ...(await saveProfile(previous, data)),
+      attempt: (previous.attempt ?? 0) + 1,
+    }),
+    {},
+  );
   const errors = state.fieldErrors ?? {};
-  // A refused form keeps what was typed. Otherwise it starts from the stored profile.
   const text = (name: keyof AssetProfile): string => {
     const typed = state.values?.[name];
     if (typeof typed === "string") return typed;
@@ -155,7 +162,7 @@ export function ProfileForm({
   return (
     <form action={action} aria-label="Edit profile" className="grid gap-3 p-3 md:grid-cols-2">
       <input type="hidden" name="asset_id" value={assetId} />
-      <div key={versionId ?? "none"} className="contents">
+      <div key={`${versionId ?? "none"}-${state.attempt ?? 0}`} className="contents">
         <Select label="Asset type" name="asset_type" value={text("asset_type")}
           options={vocabulary(ASSET_TYPES)} error={errors.asset_type} />
         <Select label="Deployment environment" name="deployment_environment"

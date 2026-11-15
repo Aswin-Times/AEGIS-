@@ -87,6 +87,36 @@ test("a second profile save from the same page keeps the choices saved by the fi
   expect(second.profile).toEqual({ ...first, business_purpose: "Synthetic second purpose" });
 });
 
+test("a refused profile save keeps every choice that was made", async ({ page }) => {
+  const asset = await newAsset();
+  await tenant.signIn(page, "admin");
+  await page.goto(`/governance/assets/${asset.id}`);
+  const owner = page.getByLabel("Business owner");
+  await owner.selectOption({ label: "admin2@synthetic.example.test" });
+  const chosen = await owner.inputValue();
+  await page.getByLabel("Asset type").selectOption("autonomous_agent");
+  await page.getByRole("checkbox", { name: "Internal", exact: true }).check();
+  // Over the 2000-character limit, so the save is refused and nothing is stored.
+  await page.getByLabel("Business purpose").fill("x".repeat(2001));
+  await page.getByRole("button", { name: "Save profile" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Some fields need attention" })).toBeVisible();
+  await expect(page.getByLabel("Business purpose")).toHaveAttribute("aria-invalid", "true");
+  expect((await detailOf(asset.id)).profile).toBeNull();
+
+  await expect(owner).toHaveValue(chosen);
+  await expect(page.getByLabel("Asset type")).toHaveValue("autonomous_agent");
+  await expect(page.getByRole("checkbox", { name: "Internal", exact: true })).toBeChecked();
+  await page.getByLabel("Business purpose").fill("Synthetic purpose after a refusal");
+  await page.getByRole("button", { name: "Save profile" }).click();
+  await expect(page.getByRole("status")).toContainText("Profile saved as version 1");
+  expect((await detailOf(asset.id)).profile!.profile).toMatchObject({
+    business_owner_id: chosen,
+    asset_type: "autonomous_agent",
+    data_categories: ["internal"],
+    business_purpose: "Synthetic purpose after a refusal",
+  });
+});
+
 /** An asset with a complete assessment, in ASSESSMENT_REQUIRED, made through the API. */
 async function assessedAsset(profile: object = LOW_PROFILE) {
   const asset = await newAsset();

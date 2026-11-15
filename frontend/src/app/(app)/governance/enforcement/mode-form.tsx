@@ -1,6 +1,6 @@
 "use client";
 
-import { type ActionState, ConfirmAction } from "@/components/confirm-action";
+import { type ActionState, ConfirmAction, valueOf } from "@/components/confirm-action";
 import { CONTROL, Field } from "@/components/form-field";
 import { setEnforcementMode } from "./actions";
 
@@ -36,6 +36,7 @@ export function ModeForm({ target }: { target: "observe" | "enforce" }) {
                 name="reason"
                 rows={3}
                 maxLength={2000}
+                defaultValue={valueOf(state, "reason")}
                 aria-invalid={invalid || undefined}
                 aria-describedby={describedBy}
                 className={CONTROL}

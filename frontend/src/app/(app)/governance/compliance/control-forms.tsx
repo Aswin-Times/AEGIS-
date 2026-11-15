@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { type ActionState, ConfirmAction } from "@/components/confirm-action";
+import { type ActionState, ConfirmAction, valueOf, valuesOf } from "@/components/confirm-action";
 import { CONTROL, Field } from "@/components/form-field";
 import { humanize } from "@/lib/format";
 import { assessControl, verifyEvidence } from "./actions";
@@ -48,7 +48,7 @@ export function AssessControl({
               <select
                 id={id}
                 name="status"
-                defaultValue=""
+                defaultValue={valueOf(state, "status")}
                 aria-invalid={invalid || undefined}
                 aria-describedby={describedBy}
                 className={CONTROL}
@@ -71,6 +71,7 @@ export function AssessControl({
                 name="note"
                 rows={3}
                 maxLength={2000}
+                defaultValue={valueOf(state, "note")}
                 aria-invalid={invalid || undefined}
                 aria-describedby={describedBy}
                 className={CONTROL}
@@ -96,7 +97,13 @@ export function AssessControl({
             ) : (
               evidence.map((item) => (
                 <label key={item.id} className="flex items-start gap-1.5 py-0.5 text-sm">
-                  <input type="checkbox" name="evidence_ids" value={item.id} className="mt-1" />
+                  <input
+                    type="checkbox"
+                    name="evidence_ids"
+                    value={item.id}
+                    defaultChecked={valuesOf(state, "evidence_ids").includes(item.id)}
+                    className="mt-1"
+                  />
                   <span>
                     {item.description}
                     <span className="text-xs text-muted"> ({humanize(item.verification)})</span>
@@ -118,7 +125,10 @@ export function AssessControl({
 
 function VerifyFields({ sourceType, state }: { sourceType: string; state: ActionState }) {
   const methods = METHODS_BY_SOURCE[sourceType] ?? ["manual_attestation"];
-  const [method, setMethod] = useState(methods[0]);
+  // Fields start from a refused submission, so a second attempt sends what was chosen.
+  const submitted = valueOf(state, "method");
+  const [method, setMethod] = useState(methods.includes(submitted) ? submitted : methods[0]);
+  const outcome = valueOf(state, "outcome", "VERIFIED");
   const errors = state.fieldErrors ?? {};
   return (
     <div className="mb-3 space-y-3">
@@ -126,11 +136,13 @@ function VerifyFields({ sourceType, state }: { sourceType: string; state: Action
         <legend className="text-sm font-medium">Outcome</legend>
         <div className="flex gap-4">
           <label className="flex items-center gap-1.5">
-            <input type="radio" name="outcome" value="VERIFIED" defaultChecked />
+            <input type="radio" name="outcome" value="VERIFIED"
+              defaultChecked={outcome === "VERIFIED"} />
             Verified
           </label>
           <label className="flex items-center gap-1.5">
-            <input type="radio" name="outcome" value="REJECTED" />
+            <input type="radio" name="outcome" value="REJECTED"
+              defaultChecked={outcome === "REJECTED"} />
             Rejected
           </label>
         </div>
@@ -169,6 +181,7 @@ function VerifyFields({ sourceType, state }: { sourceType: string; state: Action
               id={id}
               name="content"
               rows={4}
+              defaultValue={valueOf(state, "content")}
               aria-invalid={invalid || undefined}
               aria-describedby={describedBy}
               className={CONTROL}
@@ -183,6 +196,7 @@ function VerifyFields({ sourceType, state }: { sourceType: string; state: Action
             name="note"
             rows={3}
             maxLength={2000}
+            defaultValue={valueOf(state, "note")}
             aria-invalid={invalid || undefined}
             aria-describedby={describedBy}
             className={CONTROL}
